@@ -437,6 +437,8 @@ subtest 'resolvesymlink on chains' => sub {
 	mklink('rp1/x1','../x0');
 	mklink('rp2/rp3/x2',"$dir/lp1/x1");
 	mklink('rp2/x3','lp3/x2');
+	# link to nonexistent dir
+	mklink('rp1/y1','../xp1/t1');
 	my $EXP_LIST = <<"ENDLIST";
 $dir/
 $dir/lp1 -> rp1
@@ -445,6 +447,7 @@ $dir/rp1/aa -> t1
 $dir/rp1/cc -> ../rp2/lp3/bb
 $dir/rp1/t1
 $dir/rp1/x1 -> ../x0
+$dir/rp1/y1 X> ../xp1/t1
 $dir/rp2/
 $dir/rp2/dd -> $dir/lp1/cc
 $dir/rp2/lp3 -> $dir/rp2/rp3
@@ -465,6 +468,7 @@ ENDLIST
 ./rp1/aa -> t1
 ./rp1/cc -> ../rp2/lp3/bb
 ./rp1/x1 -> ../x0
+./rp1/y1 X> ../xp1/t1
 ./rp2/dd -> $dir/lp1/cc
 ./rp2/lp3 -> $dir/rp2/rp3
 ./rp2/x3 -> lp3/x2
@@ -478,6 +482,7 @@ STDOUT
 ./rp1/aa -> $dir/rp1/t1
 ./rp1/cc -> $dir/rp2/rp3/bb -> $dir/rp1/aa -> $dir/rp1/t1
 ./rp1/x1 -> $dir/x0 X> $dir/dead
+./rp1/y1 X> $dir/rp1/../xp1/t1
 ./rp2/dd -> $dir/rp1/cc -> $dir/rp2/rp3/bb -> $dir/rp1/aa -> $dir/rp1/t1
 ./rp2/lp3 -> $dir/rp2/rp3
 ./rp2/x3 -> $dir/rp2/rp3/x2 -> $dir/rp1/x1 -> $dir/x0 X> $dir/dead
@@ -498,6 +503,7 @@ STDOUT
 ./rp1/aa -> t1 (-> $dir/rp1/t1)
 ./rp1/cc -> ../rp2/lp3/bb (-> $dir/rp1/../rp2/lp3/bb)
 ./rp1/x1 -> ../x0 (-> $dir/rp1/../x0)
+./rp1/y1 X> ../xp1/t1 (X> $dir/rp1/../xp1/t1)
 ./rp2/dd -> $dir/lp1/cc (-> $dir/lp1/cc)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/rp2/lp3/x2)
@@ -511,6 +517,7 @@ STDOUT
 ./rp1/aa -> t1 (-> $dir/rp1/t1)
 ./rp1/cc -> ../rp2/lp3/bb (-> $dir/rp2/rp3/bb)
 ./rp1/x1 -> ../x0 (-> $dir/x0)
+./rp1/y1 X> ../xp1/t1 (X> $dir/rp1/../xp1/t1)
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/cc)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/rp2/rp3/x2)
@@ -530,6 +537,7 @@ STDOUT
 ./rp1/aa -> t1 (-> $dir/rp1/t1)
 ./rp1/cc -> ../rp2/lp3/bb (-> $dir/rp1/t1)
 ./rp1/x1 -> ../x0 (X> $dir/dead)
+./rp1/y1 X> ../xp1/t1 (X> $dir/rp1/../xp1/t1)
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/t1)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (X> $dir/dead)
@@ -548,6 +556,7 @@ STDOUT
 ./rp1/aa -> t1 (-> $dir/rp1/t1)
 ./rp1/cc -> ../rp2/lp3/bb (-> $dir/rp1/aa)
 ./rp1/x1 -> ../x0 (X> $dir/dead)
+./rp1/y1 X> ../xp1/t1 (X> $dir/rp1/../xp1/t1)
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp2/rp3/bb)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/rp1/x1)
@@ -562,6 +571,7 @@ STDOUT
 ./rp1/aa -> t1 (-> $dir/rp1/t1)
 ./rp1/cc -> ../rp2/lp3/bb (-> $dir/rp1/t1)
 ./rp1/x1 -> ../x0 (X> $dir/dead)
+./rp1/y1 X> ../xp1/t1 (X> $dir/rp1/../xp1/t1)
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/aa)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/x0)
@@ -582,6 +592,7 @@ STDOUT
 ./rp1/aa -> t1 (-> $dir/rp1/t1)
 ./rp1/cc -> ../rp2/lp3/bb (-> $dir/rp1/t1)
 ./rp1/x1 -> ../x0 (X> $dir/dead)
+./rp1/y1 X> ../xp1/t1 (X> $dir/rp1/../xp1/t1)
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/t1)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (X> $dir/dead)
@@ -600,6 +611,7 @@ STDOUT
 ./rp1/aa -> t1 (-> $dir/rp1/t1)
 ./rp1/cc -> ../rp2/lp3/bb (-> $dir/rp1/aa)
 ./rp1/x1 -> ../x0 (-> $dir/x0)
+./rp1/y1 X> ../xp1/t1 (X> $dir/rp1/../xp1/t1)
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/aa)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/x0)
@@ -614,6 +626,7 @@ STDOUT
 ./rp1/aa -> t1 (-> $dir/rp1/t1)
 ./rp1/cc -> ../rp2/lp3/bb (-> $dir/rp2/rp3/bb)
 ./rp1/x1 -> ../x0 (-> $dir/x0)
+./rp1/y1 X> ../xp1/t1 (X> $dir/rp1/../xp1/t1)
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp2/rp3/bb)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/rp1/x1)
@@ -628,6 +641,7 @@ STDOUT
 ./rp1/aa -> t1 (-> $dir/rp1/t1)
 ./rp1/cc -> ../rp2/lp3/bb (-> $dir/rp2/rp3/bb)
 ./rp1/x1 -> ../x0 (-> $dir/x0)
+./rp1/y1 X> ../xp1/t1 (X> $dir/rp1/../xp1/t1)
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/cc)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/rp2/rp3/x2)

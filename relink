@@ -192,22 +192,26 @@ In these places, the level of resolution is controlled by the C<-d DEPTH>
 option, which may have the following values (note strings are case
 insensitive). The default level is C<path>.
 
-Note that this resolution will proceed whether or not the link's target
-exists (i.e. whether or not this is a broken link). If you want to exclude
-broken links, you can use the C<-B> switch or implement a custom filter
-with the C<-t TARG> option.
+Note that this resolution will proceed as far as possible, whether or not
+the link's target exists (i.e. whether or not this is a broken link). If
+you want to exclude broken links, you can use the C<-B> switch or implement
+a custom filter with the C<-t TARG> option.
 
 =over
 
 =item C<full> or C<f>
 
 The link target is resolved with C<abs_path> from L<Cwd|Cwd>.
+However, if the link's target doesn't exist, no resolution is done
+(the equivalent of depth C<none>).
 [Should be the equivalent of C<-d inf> and C<-d -1>.]
 
 =item C<path> or C<p>
 
 The pathname portion of the link is resolved with C<abs_path> from
 L<Cwd|Cwd>. This is the default level.
+However, if the path of the link's target doesn't exist, no resolution is
+done (the equivalent of depth C<none>).
 [Should be the equivalent of C<-d 0>.]
 
 =item C<none> or C<n>
@@ -219,6 +223,8 @@ before resolution, the result is also absolute.
 
 Only the initial step of link chain resolution is done, meaning the link's
 pathname is resolved.
+However, if the path of the link's target doesn't exist, no resolution is
+done (the equivalent of depth C<none>).
 [Should be the equivalent of C<-d path>.]
 
 =item A positive integer
@@ -346,7 +352,7 @@ eval { symlink("",""); 1 }
 	or die "Your system does not support symlinks.\n";
 
 sub HELP_MESSAGE { pod2usage(-output=>shift); return }
-sub VERSION_MESSAGE { say {shift} q$relink v0.04$; return }
+sub VERSION_MESSAGE { say {shift} q$relink v0.05$; return }
 $Getopt::Std::STANDARD_HELP_VERSION = 1;
 
 pod2usage("Command missing") unless @ARGV;
@@ -560,12 +566,13 @@ sub resolvesymlink {  ## no critic (ProhibitExcessComplexity)
 	croak "resolvesymlink: filename must be absolute" unless is_abs($file);
 	my $depth = $dopt//'path';
 	if ($depth=~/^f(?:ull)?$/i)
-		{ return abs_path($file) }
+		{ return -l $file || -e $file ? abs_path($file) : $file }
 	elsif ($depth=~/^n(?:one)?$/i)
 		{ return $file }
 	elsif ($depth=~/^p(?:ath)?$/i) {
 		# This is essentially what Path::Tiny::realpath is doing
 		my ($bn, $p) = fileparse($file);
+		return $file unless -l $p || -e $p;
 		return catfile(abs_path($p), $bn) }
 	elsif ($depth=~/^i(?:nf(?:inity)?)?$/i) {
 		$depth = undef }
@@ -582,6 +589,7 @@ sub resolvesymlink {  ## no critic (ProhibitExcessComplexity)
 		while(!defined($d) || $d-->0) {
 			my $dir;
 			($f,$dir) = fileparse($f);
+			last unless -d $dir;
 			chdir $dir or die "resolvesymlink: chdir '$dir' failed: $!\n";
 			push @files, catfile(getcwd,$f);
 			last unless -l $f;
@@ -592,6 +600,7 @@ sub resolvesymlink {  ## no critic (ProhibitExcessComplexity)
 	1 }; my $err = $@||'unknown error';
 	chdir $origwd or croak "resolvesymlink: chdir '$origwd' failed: $!\n";
 	croak $err unless $rv;
+	@files = ($file) unless @files;
 	return @files if $dopt eq 'list';
 	return $files[-1] unless defined $depth;
 	return $files[0]  if $depth<0 && abs($depth)>@files;
