@@ -1,0 +1,615 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+use 5.010; no feature 'switch';
+
+=head1 SYNOPSIS
+
+ Resolve* and convert absolute symlinks to relative or vice versa:
+   > relink abs2rel [-nvcCFBgbws] [-d DEPTH] [-t TARG] --      PATH(s)
+   > relink rel2abs [-nvcCFBgbws] [-d DEPTH] [-t TARG] --      PATH(s)
+ Rewrite symlinks with Perl:
+   > relink rewrite [-nvcCFBgbws] [-d DEPTH] [-t TARG] -- EXPR PATH(s)
+ Just list symlinks:
+   > relink list    [-lvcCFBgbws] [-d DEPTH] [-t TARG] --      PATH(s)
+ OPTIONS:
+   -n - Dry-run: don't actually relink, just print what would be done.
+        Note the EXPR and TARG Perl code will still be executed!
+   -l - Show all links in a chain (overrides -v; forces -d path)
+   -v - With "list", also shows the resolved* target of links;
+        with the other commands, prints all operations.
+   -c - Forces colored output.
+   -C - Disables colored output (overrides -c).
+   -F - Don't recursively search the PATH(s) for symlinks, instead
+        operate only on the symlinks given as PATH(s).
+   -B - Only operate on non-broken symlinks.
+   -g - Alias for -B.
+   -b - Only operate on broken symlinks.
+   -w - Cause Perl code to be evaluated with "use warnings" enabled.
+   -s - Cause Perl code to be evaluated with "use strict" enabled.
+   -d - Specify the depth to which links should be resolved*. Valid
+        values: integers, i/inf, f/full, p/path (default), n/none.
+   -t - TARG is a piece of Perl code*, for example: "m{^/foo/}"
+        $_ is the link's target (readlink). If the code returns false,
+        the link is not processed. -t is applied after -b/-B.
+   Note: The "--" may be omitted if you are certain that neither
+     EXPR nor PATH(s) begins with a "-", even after shell expansions.
+ EXPR: A piece of Perl code*, for example: "s/foo/bar/"
+   Code should operate on $_, which is the link's target (readlink).
+   Can set $_ to undef and no action will be taken.
+ PATH(s):
+   Without -F (default), a list of paths which are recursively
+     searched for symlinks. Defaults to curdir if not provided.
+   With -F, a list of symbolic links to operate on. Anything that
+     is not a symlink is silently skipped.
+ 
+ Copyright (c) 2017 Hauke Daempfling (haukex@zero-g.net) at IGB Berlin
+ * For full details please see the full documentation, which includes
+   copyright & licensing info. Use the command "perldoc relink".
+
+=head1 DETAILS
+
+This section documents the things that don't fit in the L</SYNOPSIS>,
+so please read the L</SYNOPSIS> first!
+
+=head2 Perl Code
+
+The command C<rewrite> and the C<-t TARG> option allow you to execute
+arbitrary Perl code. Within these Perl code snippets, you normally work
+with the special variable C<$_>, but there are a few other functions
+and variables that are made available. The additional functions are:
+
+=over
+
+=item *
+
+From L<File::Spec::Functions|File::Spec::Functions>:
+C<abs2rel>, C<rel2abs>, C<catfile>, C<catdir>, C<splitdir>,
+and C<file_name_is_absolute> aliased as C<is_abs>.
+[Note: More imports may be added later if deemed useful.]
+
+=item *
+
+From L<Cwd|Cwd>: C<abs_path>
+
+=item *
+
+From L<File::Basename|File::Basename>: C<fileparse>
+
+=item *
+
+The function C<resolvesymlink> which implements the algorithm described
+in L</Resolving of Symlinks>. It takes two arguments: The filename to
+operate on, which must be absolute, and the depth to which to resolve,
+the same values as the C<-d> option are accepted.
+In addition, the depth C<list> is accepted, which causes the function to
+return the list of links in the chain. Each is an absolute filename with
+the pathname resolved (equivalent to the depth C<path>). Note that the
+depth C<-d list> is not available on the command line, instead this
+functionality is available as C<list -l>.
+
+=back
+
+In addition, you get the following variables:
+
+=over
+
+=item C<$_>
+
+This is always the unchanged result of C<readlink> on the file (symlink)
+currently being processed. In the C<rewrite> command, you should manipulate
+this variable to rewrite the link; if you don't change C<$_> or you set it
+to C<undef> no action is taken. In the C<-t TARG> option, any changes you
+make to C<$_> will be ignored, instead the return value of the Perl code
+snippet, interpreted as a boolean, will determine whether the file is
+processed or not.
+
+=item C<$FILE>
+
+The filename of the symlink currently being processed. May be a relative
+pathname, depending on the command line arguments.
+
+=item C<$PATH>
+
+The pathname of the file (symlink) currently being processed. May be a
+relative pathname, depending on the command line arguments.
+
+=item C<$ABSPATH>
+
+The pathname of the file (symlink) currently being processed, made absolute
+with C<rel2abs> if necessary; i.e. it may still contain F<..> path elements
+and symlinks.
+
+=item C<$BROKEN>
+
+Whether or not this is a broken symlink, i.e. whether or not this symlink
+points to an existing file of any kind. This is tested via Perl's C<-l>
+and then C<-e> operator on the target. This means that if the current
+symlink points to another symlink, the current symlink is not recognized
+as broken even if the other symlink is broken.
+
+=item C<$ABSOLUTE>
+
+The result of C<readlink> on the link (i.e. the link's target), converted
+to an absolute name with C<rel2abs> if necessary, i.e. it may still contain
+F<..> pathnames, symlinks, and it may point to a nonexistent file if the
+link is broken.
+
+Your code can do its own resolving of the link by applying, for example,
+the functions C<abs_path> or C<resolvesymlink> on this variable
+(see L</Resolving of Symlinks>).
+
+=item C<$RESOLVED>
+
+The symlink's target resolved to the depth specified with the C<-d> option
+(see L</Resolving of Symlinks>).
+
+=item C<$FULL>
+
+The fully resolved target of the symlink (equivalent of C<-d full>, which
+in turn is the equivalent of using C<abs_path>).
+
+=item C<$PATHS>
+
+This is a precompiled regular expression that matches all the C<PATH(s)>
+listed on the command line. For example, the following will list only
+those links from C<PATHS> whose I<final targets> are also in C<PATHS>
+(note that since we're matching against the fully resolved link target
+C<$FULL>, C<PATHS> must be absolute pathnames for this to work correctly).
+
+ relink list -vt '$FULL=~/^$PATHS/' -- PATHS
+
+=back
+
+=head2 Resolving of Symlinks
+
+This tool provides detailed control over how symlinks are resolved, which
+can be helpful in case you want to "walk" a chain of symlinks (one symlink
+pointing to one or more following symlinks until the target is reached).
+This resolving / walking of symlinks is applied in several places:
+
+=over
+
+=item *
+
+The C<rel2abs> command
+
+=item *
+
+The C<abs2rel> command, before conversion to a relative symlink
+
+=item *
+
+The output of the C<list -v> command
+
+=item *
+
+The C<$RESOLVED> and C<$FULL> variables in Perl code snippets
+
+=back
+
+In these places, the level of resolution is controlled by the C<-d DEPTH>
+option, which may have the following values (note strings are case
+insensitive). The default level is C<path>.
+
+Note that this resolution will proceed whether or not the link's target
+exists (i.e. whether or not this is a broken link). If you want to exclude
+broken links, you can use the C<-B> switch or implement a custom filter
+with the C<-t TARG> option.
+
+=over
+
+=item C<full> or C<f>
+
+The link target is resolved with C<abs_path> from L<Cwd|Cwd>.
+[Should be the equivalent of C<-d inf> and C<-d -1>.]
+
+=item C<path> or C<p>
+
+The pathname portion of the link is resolved with C<abs_path> from
+L<Cwd|Cwd>. This is the default level.
+[Should be the equivalent of C<-d 0>.]
+
+=item C<none> or C<n>
+
+No resolution is done. Note that since filenames are always made absolute
+before resolution, the result is also absolute.
+
+=item Zero (0)
+
+Only the initial step of link chain resolution is done, meaning the link's
+pathname is resolved.
+[Should be the equivalent of C<-d path>.]
+
+=item A positive integer
+
+The link chain is walked by this many items forward.
+
+=item A negative integer
+
+The link chain is walked to the final target, and then indexed from the
+end. That is, a value of -1 is the final target of the link (the equivalent
+of C<-d inf>), -2 is the second-to-last link in the chain, etc.
+
+=item C<inf> or C<i> (or C<infinity>)
+
+Walk the link chain all the way to its final target.
+[Should be the equivalent of C<-d full> and C<-d -1>.]
+
+=back
+
+An example: Say you have a chain of links like F</tmp/linkone> pointing to
+F</tmp/linktwo> pointing to F</tmp/linkthree> pointing to a file
+F</tmp/file>. Then, when resolving F</tmp/linkone>, the following numeric
+depths give the following results:
+depth 0 is F</tmp/linktwo> (the target of F</tmp/linkone>),
+depth 1 is F</tmp/linkthree> (the target of F</tmp/linktwo>),
+depth 2 is F</tmp/file> (the target of F</tmp/linkthree>),
+depth -1 is F</tmp/file> (the final target of the chain),
+depth -2 is F</tmp/linkthree> (the second-to-last target of the chain),
+and depth -3 is F</tmp/linktwo> (the first target in the chain).
+A depth C<< <= >> -3 will always resolve to F</tmp/linktwo>, and
+a a depth C<< >= >> 2 will always resolve to F</tmp/file>.
+Note that since we're resolving the I<target> of F</tmp/linkone>, a depth
+of -4 I<won't> resolve to F</tmp/linkone>. Not being able to step back to
+F</tmp/linkone> also makes sense in the context of link rewriting, since
+it would open up the possibility for links to point to themselves.
+
+The difference between specifying depths numerically and as C<full> or
+C<path> (the exceptions being C<-1> and C<0>, which are their respective
+equivalents) is that numerically specified depths apply I<per link>. This
+means that, for example, if you have several different link chains of
+differing lengths, a negative depth, say -2, will mean "the second-to-last
+link in the chain" for I<each individual> link.
+
+The other difference is that C<full> and C<path> use L<Cwd|Cwd>'s
+C<abs_path>, while C<inf> and the numeric depths use a custom link walking
+algorithm implemented in this script. Any quirks that L<Cwd|Cwd> might
+have on your platform will be passed through by C<full> and C<path>.
+
+=head2 Miscellaneous
+
+The environment variable C<RELINK_SORTED_FIND> may be set to a true value
+to force the search function to iterate over files in a directory in
+sorted order.
+
+=head1 AUTHOR, COPYRIGHT, AND LICENSE
+
+Copyright (c) 2017 Hauke Daempfling (haukex@zero-g.net)
+at the Leibniz Institute of Freshwater Ecology and Inland Fisheries (IGB),
+Berlin, Germany, L<http://www.igb-berlin.de/>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see L<http://www.gnu.org/licenses/>.
+
+=cut
+
+use Carp;
+use Getopt::Std 'getopts';
+use Pod::Usage 'pod2usage';
+use File::Find 'find';
+use File::stat;
+use File::Basename 'fileparse';
+use Fcntl ':mode';
+use Cwd qw/getcwd abs_path/;
+use File::Spec::Functions
+	qw/curdir file_name_is_absolute abs2rel rel2abs catfile/;
+BEGIN { *is_abs = \&file_name_is_absolute }
+use Term::ANSIColor qw/colored/;
+
+{ # set up the package in which we will eval our code snippets
+	package CodeEval;
+	use Cwd 'abs_path';
+	use File::Spec::Functions
+		qw/file_name_is_absolute abs2rel rel2abs catfile catdir splitdir/;
+	use File::Basename 'fileparse';
+	*is_abs = *is_abs = \&file_name_is_absolute;
+	*resolvesymlink = *resolvesymlink = \&main::resolvesymlink;
+	our ($PATHS);
+	our ($FILE, $PATH, $ABSPATH, $BROKEN);
+	our ($ABSOLUTE, $RESOLVED, $FULL);
+}
+
+my %COLORS = (
+	x => '',
+	fn => 'blue',   # filename
+	ln => 'yellow', # link
+	gl => 'green',  # good link target
+	bl => 'red',    # broken link target
+	info => 'bold',
+	warn => 'bold yellow',
+	err => 'bold red',
+);
+my $COLOR = -t select;  ## no critic (ProhibitInteractiveTest)
+
+local $SIG{__DIE__} = sub {
+	my $ch = chomp( my $e=shift );
+	die cc(err=>$e).($ch?"\n":'') };
+my $_warn_count;
+local $SIG{__WARN__} = sub {
+	$_warn_count++;
+	my $ch = chomp( my $w=shift );
+	warn cc(warn=>$w).($ch?"\n":'') };
+END { warn cc(warn=>"*** THERE WERE $_warn_count WARNINGS ***")."\n" if $_warn_count }
+
+eval { symlink("",""); 1 }
+	or die "Your system does not support symlinks.\n";
+
+sub HELP_MESSAGE { pod2usage(-output=>shift); return }
+sub VERSION_MESSAGE { say {shift} q$relink v0.04$; return }
+$Getopt::Std::STANDARD_HELP_VERSION = 1;
+
+pod2usage("Command missing") unless @ARGV;
+my $COMMAND = shift @ARGV;
+pod2usage("Options come after command")
+	if $COMMAND=~/^\s*-/;
+pod2usage("Bad command $COMMAND")
+	unless $COMMAND eq 'list' || $COMMAND eq 'abs2rel'
+	|| $COMMAND eq 'rel2abs' || $COMMAND eq 'rewrite';
+
+getopts('nlvcCFBgbwsd:t:', \my %opts) or pod2usage;
+my $DRYRUN       =  !!$opts{n};
+my $LIST_LONG    =  !!$opts{l};
+my $VERBOSE      =  !!$opts{v};
+   $COLOR      = 1 if $opts{c};
+   $COLOR      = 0 if $opts{C};
+my $DONT_FIND    =  !!$opts{F};
+my $ONLY_GOOD    = (!!$opts{B})
+                || (!!$opts{g});
+my $ONLY_BROKEN  =  !!$opts{b};
+my $USE_WARNINGS =  !!$opts{w};
+my $USE_STRICT   =  !!$opts{s};
+my $RESOLVEDEPTH =    $opts{d};
+my $TARGEXPR     =    $opts{t};
+# Note: Reasons we prevent using -b and -B together instead of making
+# -bB mean the same as "process all links": the switches mean "process
+# ONLY broken resp. broken" links, so we can assume that -bB was a
+# mistake by the user. (Also, $ONLY_GOOD *used* to control other script
+# behavior in the past, although that is no longer the case.)
+pod2usage("Can't use -b and -B/-g together") if $ONLY_BROKEN && $ONLY_GOOD;
+pod2usage("Invalid depth value")
+	if defined($RESOLVEDEPTH) && # valid values see resolvesymlink()
+	# note there is no "-d list", instead there is "list -l"
+	$RESOLVEDEPTH!~/^(?:f|full|n|none|p|path|i|inf|infinity|-?[0-9]+)$/i;
+pod2usage("-t expression should not be empty")
+	if defined $TARGEXPR && $TARGEXPR!~/\S/;
+
+my $PERLEXPR;
+if ($COMMAND eq 'rewrite') {
+	pod2usage("Perl expression missing") unless @ARGV;
+	$PERLEXPR = shift @ARGV;
+	die "Perl expression looks like a filename,\n"
+		."  did you forget to specify a Perl expression?\n"
+		if !@ARGV && -e $PERLEXPR;
+}
+elsif ($COMMAND eq 'list') {
+	# Commented out the following b/c it makes more sense for the
+	# "dry-run" switch to be silently ignored with "list".
+	#pod2usage("Option -n doesn't apply to \"list\"") if $DRYRUN;
+}
+if ($LIST_LONG) {
+	pod2usage("-l only valid on 'list' command")
+		if $COMMAND ne 'list';
+	pod2usage("-l forces -d path")
+		if defined $RESOLVEDEPTH && $RESOLVEDEPTH ne 'path';
+}
+
+my @PATHS = @ARGV;
+@PATHS = (curdir) if !@PATHS && !$DONT_FIND;
+my $paths_re = join '|', map {quotemeta}
+	sort {length($b)<=>length($a) or $a cmp $b} @PATHS;
+$CodeEval::PATHS = qr/$paths_re/;
+
+my @ops; # delay changing files until done traversing
+
+if ($DONT_FIND) {
+	handle_file($_) for @PATHS;
+}
+else {
+	find({ no_chdir=>1,
+		$ENV{RELINK_SORTED_FIND} ? (preprocess =>
+			sub { my @d = sort @_; return @d }) : (),
+		wanted => sub { handle_file($File::Find::name) } },
+		@PATHS);
+}
+
+sub handle_file {  ## no critic (ProhibitExcessComplexity)
+	my $f = shift;
+	my (undef,$path) = fileparse($f);
+	my $lstat = lstat $f;
+	unless ($lstat) {
+		warn "Failed to stat $f: $!\n";
+		return }
+	return unless S_ISLNK($lstat->mode);
+	my $rl = readlink($f);
+	unless (defined $rl) {
+		warn "Failed to read link $f: $!\n";
+		return }
+	my $abspath = is_abs($path) ? $path : rel2abs($path);
+	my $rl2a = is_abs($rl) ? $rl : rel2abs($rl,$abspath);
+	# Note we used to include "defined stat($f)" in our test of whether
+	# the link is good or not, but we don't actually care if the target
+	# is read-/stat-able or not, just whether it exists.
+	my $goodlink = -l $rl2a || -e $rl2a;
+	return if $ONLY_GOOD && !$goodlink || $ONLY_BROKEN && $goodlink;
+	my $reslink = resolvesymlink($rl2a,$RESOLVEDEPTH);
+	# prepare for Perl code exec (if needed)
+	my $perleval = defined $TARGEXPR || $COMMAND eq 'rewrite' ? sub {
+		my $code = shift;
+		croak "too many arguments to perleval" if @_;
+		croak "perleval: no code" unless defined $code;
+		local $_ = $rl;
+		local $CodeEval::FILE = $f;
+		local $CodeEval::PATH = $path;
+		local $CodeEval::ABSPATH = $abspath;
+		local $CodeEval::BROKEN = !$goodlink;
+		local $CodeEval::ABSOLUTE = $rl2a;
+		local $CodeEval::RESOLVED = $reslink;
+		local $CodeEval::FULL = resolvesymlink($rl2a,'full');
+		eval  ## no critic (ProhibitStringyEval, RequireCheckingReturnValueOfEval)
+			'{ package CodeEval; '
+			.($USE_WARNINGS?'use':'no').' warnings; '
+			.($USE_STRICT?'use':'no').' strict; '
+			.$code.' } 1'
+			or die "Perl expr. failed: ".($@||"Unknown error\n");
+		return "$_";
+	} : undef;
+	# handle the -t option
+	if (defined $TARGEXPR) {
+		our $_targexpr_rv;  ## no critic (ProhibitPackageVars)
+		local $_targexpr_rv = undef;
+		$perleval->('$main::_targexpr_rv = do { '.$TARGEXPR.' }');
+		return unless $_targexpr_rv;
+	}
+	# info string maker (if needed)
+	my $mkinfo = $DRYRUN || $VERBOSE ? sub {
+		my $newtarg = shift;
+		croak "too many arguments to mkinfo" if @_;
+		my $absnewtarg = is_abs($newtarg)
+			? $newtarg : rel2abs($newtarg,$abspath);
+		my $newgood = -l $absnewtarg || -e $absnewtarg;
+		return scalar cc(fn=>$f, x=>": ",
+			($goodlink?'gl':'bl')=>$rl, ln=>" => ",
+			($newgood?'gl':'bl')=>$newtarg );
+	} : sub {};
+	# now handle the command
+	if ($COMMAND eq 'list') {
+		if ($LIST_LONG) {
+			print cc( fn => $f );
+			my @links = resolvesymlink($rl2a,'list');
+			for my $lnk (@links) {
+				my $goodreslink = -l $lnk || -e $lnk;
+				print cc( ln => ($goodreslink?' -> ':' X> '),
+					($goodreslink?'gl':'bl') => $lnk );
+			}
+		}
+		else {
+			print cc( fn => $f,
+				ln => ($goodlink?' -> ':' X> '),
+				($goodlink?'gl':'bl') => $rl );
+			if ($VERBOSE) {
+				my $goodreslink = -l $reslink || -e $reslink;
+				print cc( x=>' (',
+					ln => ($goodreslink?'-> ':'X> '),
+					($goodreslink?'gl':'bl') => $reslink,
+					x => ')' );
+			}
+		}
+		print "\n";
+	}
+	elsif ($COMMAND eq 'abs2rel') {
+		my $newtarg = abs2rel($reslink,$abspath);
+		if ($newtarg ne $rl) {
+			push @ops, relink_op($f, $newtarg, $mkinfo->($newtarg));
+		}
+	}
+	elsif ($COMMAND eq 'rel2abs') {
+		if ($reslink ne $rl) {
+			push @ops, relink_op($f, $reslink, $mkinfo->($reslink));
+		}
+	}
+	elsif ($COMMAND eq 'rewrite') {
+		my $newtarg = $perleval->($PERLEXPR);
+		if (defined $newtarg && $newtarg ne $rl) {
+			push @ops, relink_op($f, $newtarg, $mkinfo->($newtarg));
+		}
+	}
+	else { die $COMMAND } # shouldn't happen
+	return;
+}
+
+for my $o (@ops) {
+	eval { $o->(); 1 }
+		or warn $@||"Operation failed with unknown error\n";
+}
+
+if ( !@ops && $COMMAND ne 'list' && ($DRYRUN||$VERBOSE) )
+	{ say STDERR cc(info=>"No operations performed") }
+elsif ($DRYRUN)
+	{ say STDERR cc(info=>"*** REMINDER: This was a dry-run ***") }
+
+sub relink_op {
+	my ($link,$targ,$info) = @_;
+	return sub {
+		say $info if defined $info && length $info;
+		-l $link or die "Internal Error: $link is not a symlink"; # shouldn't happen
+		return if $DRYRUN;
+		unlink($link)==1 && !-e $link
+			or die "Failed to unlink $link: $!\n";
+		symlink($targ,$link)
+			or die "Failed to symlink $link to $targ: $!\n";
+		-l $link && readlink($link) eq $targ
+			or die "Failed to verify new symlink $link to $targ\n";
+	};
+}
+
+sub resolvesymlink {  ## no critic (ProhibitExcessComplexity)
+	my $file = shift;
+	my $dopt = shift;
+	croak "too many arguments to resolvesymlink" if @_;
+	croak "resolvesymlink: filename must be absolute" unless is_abs($file);
+	my $depth = $dopt//'path';
+	if ($depth=~/^f(?:ull)?$/i)
+		{ return abs_path($file) }
+	elsif ($depth=~/^n(?:one)?$/i)
+		{ return $file }
+	elsif ($depth=~/^p(?:ath)?$/i) {
+		# This is essentially what Path::Tiny::realpath is doing
+		my ($bn, $p) = fileparse($file);
+		return catfile(abs_path($p), $bn) }
+	elsif ($depth=~/^i(?:nf(?:inity)?)?$/i) {
+		$depth = undef }
+	elsif ($depth=~/^list$/i) {
+		$depth = undef }
+	else # walk the link to a certain depth
+		{ $depth=~/^-?[0-9]+$/ or croak "resolvesymlink: bad 'depth' value $depth" }
+	my @files;
+	my $origwd = getcwd;
+	my $rv = eval { # in eval so orig working dir is always restored
+		my $f = $file;
+		# negative and undef depth mean we need to walk to the end
+		my $d = defined($depth) && $depth>=0 ? $depth+1 : undef;
+		while(!defined($d) || $d-->0) {
+			my $dir;
+			($f,$dir) = fileparse($f);
+			chdir $dir or die "resolvesymlink: chdir '$dir' failed: $!\n";
+			push @files, catfile(getcwd,$f);
+			last unless -l $f;
+			defined( $f = readlink $f )
+				or die "resolvesymlink: readlink '$f' failed (cwd: "
+					.getcwd."): $!\n";
+		}
+	1 }; my $err = $@||'unknown error';
+	chdir $origwd or croak "resolvesymlink: chdir '$origwd' failed: $!\n";
+	croak $err unless $rv;
+	return @files if $dopt eq 'list';
+	return $files[-1] unless defined $depth;
+	return $files[0]  if $depth<0 && abs($depth)>@files;
+	return $files[-1] if $depth>$#files;
+	return $files[$depth];
+}
+
+sub cc { # Colorize: cc(category=>"text", category=>"text", ...)
+	my @a = @_;
+	die "Error: odd number of args to cc()" if @a%2;
+	my @o;
+	while (@a) {
+		my ($cat,$txt) = (shift @a, shift @a);
+		die "Error: bad color category '$cat'"
+			unless defined $COLORS{$cat};
+		push @o, $COLOR && length $COLORS{$cat}
+			? colored($txt,$COLORS{$cat}) : $txt;
+	}
+	return wantarray ? @o : join($,//'',@o);
+}
+
