@@ -202,8 +202,8 @@ a custom filter with the C<-t TARG> option.
 =item C<full> or C<f>
 
 The link target is resolved with C<abs_path> from L<Cwd|Cwd>.
-However, if the link's target doesn't exist, no resolution is done
-(the equivalent of depth C<none>).
+However, if the link's target doesn't exist, fall back to depth C<path>
+(which may fall back to C<none> if the target's path doesn't exist either).
 [Should be the equivalent of C<-d inf> and C<-d -1>.]
 
 =item C<path> or C<p>
@@ -352,7 +352,7 @@ eval { symlink("",""); 1 }
 	or die "Your system does not support symlinks.\n";
 
 sub HELP_MESSAGE { pod2usage(-output=>shift); return }
-sub VERSION_MESSAGE { say {shift} q$relink v0.05$; return }
+sub VERSION_MESSAGE { say {shift} q$relink v0.06$; return }
 $Getopt::Std::STANDARD_HELP_VERSION = 1;
 
 pod2usage("Command missing") unless @ARGV;
@@ -565,11 +565,12 @@ sub resolvesymlink {  ## no critic (ProhibitExcessComplexity)
 	croak "too many arguments to resolvesymlink" if @_;
 	croak "resolvesymlink: filename must be absolute" unless is_abs($file);
 	my $depth = $dopt//'path';
-	if ($depth=~/^f(?:ull)?$/i)
-		{ return -l $file || -e $file ? abs_path($file) : $file }
-	elsif ($depth=~/^n(?:one)?$/i)
+	if ($depth=~/^n(?:one)?$/i)
 		{ return $file }
-	elsif ($depth=~/^p(?:ath)?$/i) {
+	elsif ($depth=~/^(?:p(?:ath)|f(?:ull)?)?$/i) {
+		# "full" falls back on "path" if the target doesn't exist
+		if ( $depth=~/^f/i && (-l $file || -e $file) )
+			{ return abs_path($file) }
 		# This is essentially what Path::Tiny::realpath is doing
 		my ($bn, $p) = fileparse($file);
 		return $file unless -l $p || -e $p;

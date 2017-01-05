@@ -439,6 +439,8 @@ subtest 'resolvesymlink on chains' => sub {
 	mklink('rp2/x3','lp3/x2');
 	# link to nonexistent dir
 	mklink('rp1/y1','../xp1/t1');
+	# link to nonexistent file, with path component
+	mklink('rp2/y2','../dead');
 	my $EXP_LIST = <<"ENDLIST";
 $dir/
 $dir/lp1 -> rp1
@@ -456,6 +458,7 @@ $dir/rp2/rp3/bb -> ../../lp1/aa
 $dir/rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd
 $dir/rp2/rp3/x2 -> $dir/lp1/x1
 $dir/rp2/x3 -> lp3/x2
+$dir/rp2/y2 X> ../dead
 $dir/x0 X> dead
 ENDLIST
 	is list({all=>1},'.'), $EXP_LIST, "test dir $dir";
@@ -472,6 +475,7 @@ ENDLIST
 ./rp2/dd -> $dir/lp1/cc
 ./rp2/lp3 -> $dir/rp2/rp3
 ./rp2/x3 -> lp3/x2
+./rp2/y2 X> ../dead
 ./rp2/rp3/bb -> ../../lp1/aa
 ./rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd
 ./rp2/rp3/x2 -> $dir/lp1/x1
@@ -486,6 +490,7 @@ STDOUT
 ./rp2/dd -> $dir/rp1/cc -> $dir/rp2/rp3/bb -> $dir/rp1/aa -> $dir/rp1/t1
 ./rp2/lp3 -> $dir/rp2/rp3
 ./rp2/x3 -> $dir/rp2/rp3/x2 -> $dir/rp1/x1 -> $dir/x0 X> $dir/dead
+./rp2/y2 X> $dir/dead
 ./rp2/rp3/bb -> $dir/rp1/aa -> $dir/rp1/t1
 ./rp2/rp3/ee -> $dir/rp2/dd -> $dir/rp1/cc -> $dir/rp2/rp3/bb -> $dir/rp1/aa -> $dir/rp1/t1
 ./rp2/rp3/x2 -> $dir/rp1/x1 -> $dir/x0 X> $dir/dead
@@ -507,6 +512,7 @@ STDOUT
 ./rp2/dd -> $dir/lp1/cc (-> $dir/lp1/cc)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/rp2/lp3/x2)
+./rp2/y2 X> ../dead (X> $dir/rp2/../dead)
 ./rp2/rp3/bb -> ../../lp1/aa (-> $dir/rp2/rp3/../../lp1/aa)
 ./rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd (-> $dir/lp1/../rp2/lp3/../dd)
 ./rp2/rp3/x2 -> $dir/lp1/x1 (-> $dir/lp1/x1)
@@ -521,6 +527,7 @@ STDOUT
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/cc)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/rp2/rp3/x2)
+./rp2/y2 X> ../dead (X> $dir/dead)
 ./rp2/rp3/bb -> ../../lp1/aa (-> $dir/rp1/aa)
 ./rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd (-> $dir/rp2/dd)
 ./rp2/rp3/x2 -> $dir/lp1/x1 (-> $dir/rp1/x1)
@@ -541,6 +548,7 @@ STDOUT
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/t1)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (X> $dir/dead)
+./rp2/y2 X> ../dead (X> $dir/dead)
 ./rp2/rp3/bb -> ../../lp1/aa (-> $dir/rp1/t1)
 ./rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd (-> $dir/rp1/t1)
 ./rp2/rp3/x2 -> $dir/lp1/x1 (X> $dir/dead)
@@ -560,6 +568,7 @@ STDOUT
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp2/rp3/bb)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/rp1/x1)
+./rp2/y2 X> ../dead (X> $dir/dead)
 ./rp2/rp3/bb -> ../../lp1/aa (-> $dir/rp1/t1)
 ./rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd (-> $dir/rp1/cc)
 ./rp2/rp3/x2 -> $dir/lp1/x1 (-> $dir/x0)
@@ -575,6 +584,7 @@ STDOUT
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/aa)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/x0)
+./rp2/y2 X> ../dead (X> $dir/dead)
 ./rp2/rp3/bb -> ../../lp1/aa (-> $dir/rp1/t1)
 ./rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd (-> $dir/rp2/rp3/bb)
 ./rp2/rp3/x2 -> $dir/lp1/x1 (X> $dir/dead)
@@ -596,6 +606,7 @@ STDOUT
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/t1)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (X> $dir/dead)
+./rp2/y2 X> ../dead (X> $dir/dead)
 ./rp2/rp3/bb -> ../../lp1/aa (-> $dir/rp1/t1)
 ./rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd (-> $dir/rp1/aa)
 ./rp2/rp3/x2 -> $dir/lp1/x1 (X> $dir/dead)
@@ -615,6 +626,7 @@ STDOUT
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/aa)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/x0)
+./rp2/y2 X> ../dead (X> $dir/dead)
 ./rp2/rp3/bb -> ../../lp1/aa (-> $dir/rp1/aa)
 ./rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd (-> $dir/rp1/aa)
 ./rp2/rp3/x2 -> $dir/lp1/x1 (-> $dir/x0)
@@ -630,6 +642,7 @@ STDOUT
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp2/rp3/bb)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/rp1/x1)
+./rp2/y2 X> ../dead (X> $dir/dead)
 ./rp2/rp3/bb -> ../../lp1/aa (-> $dir/rp1/aa)
 ./rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd (-> $dir/rp2/rp3/bb)
 ./rp2/rp3/x2 -> $dir/lp1/x1 (-> $dir/rp1/x1)
@@ -645,6 +658,7 @@ STDOUT
 ./rp2/dd -> $dir/lp1/cc (-> $dir/rp1/cc)
 ./rp2/lp3 -> $dir/rp2/rp3 (-> $dir/rp2/rp3)
 ./rp2/x3 -> lp3/x2 (-> $dir/rp2/rp3/x2)
+./rp2/y2 X> ../dead (X> $dir/dead)
 ./rp2/rp3/bb -> ../../lp1/aa (-> $dir/rp1/aa)
 ./rp2/rp3/ee -> $dir/lp1/../rp2/lp3/../dd (-> $dir/rp1/cc)
 ./rp2/rp3/x2 -> $dir/lp1/x1 (-> $dir/rp1/x1)
