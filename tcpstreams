@@ -1,0 +1,65 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+use Getopt::Std 'getopts';
+use Pod::Usage 'pod2usage';
+use IPC::System::Simple qw/systemx capturex/;
+
+=head1 SYNOPSIS
+
+ tcpstreams [OPTIONS] [INFILES]
+ OPTIONS:
+   -a       - ASCII output (default is binary)
+   -l / -r  - Only output left / right node (not with -a)
+   -s N     - Show only stream number N
+   -o FILE  - Output file (default is STDOUT)
+ INFILES defaults to *.pcap*
+
+=cut
+
+sub HELP_MESSAGE { pod2usage(-output=>shift) }
+sub VERSION_MESSAGE { say {shift} q$tcpstreams v0.01$ }
+$Getopt::Std::STANDARD_HELP_VERSION = 1;
+getopts('alrs:o:', \my %opts) or pod2usage;
+
+my $ASCOUT = !!$opts{a};
+pod2usage("-l/-r don't work with -a") if ($opts{l} || $opts{r}) && $opts{a};
+my $SHOWONLY = $opts{l} ? ($opts{r} ? '' : 'left') : ($opts{r} ? 'right' : '');
+my $STREAM = $opts{s};
+pod2usage("bad stream number") if length $STREAM && $STREAM!~/\A\d+\z/;
+my $OUTFILE = $opts{o};
+my @FILES = @ARGV ? @ARGV : sort <*.pcap*>;
+pod2usage("No files") unless @FILES;
+
+if (defined $OUTFILE) {
+	open my $fh, '>', $OUTFILE
+		or die "Couldn't open $OUTFILE for write: $!";
+	select $fh;
+}
+binmode select unless $ASCOUT;
+for my $file (@FILES) {
+	my @streams = capturex qw/ tshark -T fields -e tcp.stream -r /, $file;
+	chomp(@streams);
+	@streams = sort {$a<=>$b} grep {length} keys %{{map {$_=>1} @streams}};
+	for my $stream (@streams) {
+		next if length $STREAM && $STREAM!=$stream;
+		my @basecmd = ('tshark', '-r', $file, '-qz');
+		if ($ASCOUT) {
+			print "##### "x4, "$file TCP Stream $stream", " #####"x4;
+			systemx @basecmd, "follow,tcp,hex,$stream";
+		}
+		else {
+			for (capturex @basecmd, "follow,tcp,raw,$stream") {
+				next if !/\S/ || /^=+$/ || /^Filter: tcp.stream eq $stream$/
+					|| /^Follow: tcp,raw$/ || /^Node \d+: .+$/;
+				my ($indent,$data) = /^(\s*)([0-9a-fA-F]+)$/
+					or die "Unknown line format: $_";
+				next if $SHOWONLY eq 'left'  &&  length $indent
+				     || $SHOWONLY eq 'right' && !length $indent;
+				print pack 'H*', $data;
+			}
+		}
+	}
+}
+close select if defined $OUTFILE;
+

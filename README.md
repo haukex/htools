@@ -12,6 +12,10 @@ A collection of various software tools and scripts.
 	
 	Rewrite symbolic links with Perl.
 	
+*	**`tcpstreams`**
+	
+	Dump TCP streams from `.pcap` files using `tshark`, in ASCII or binary.
+	
 *	**`t/*.t`**
 	
 	Test scripts for the tools. Run the commands `prove` or `prove -v`
