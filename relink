@@ -358,7 +358,7 @@ eval { symlink("",""); 1 }
 	or die "Your system does not support symlinks.\n";
 
 sub HELP_MESSAGE { pod2usage(-output=>shift); return }
-sub VERSION_MESSAGE { say {shift} q$relink v0.06$; return }
+sub VERSION_MESSAGE { say {shift} q$relink v0.07$; return }
 $Getopt::Std::STANDARD_HELP_VERSION = 1;
 
 pod2usage("Command missing") unless @ARGV;
