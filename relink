@@ -6,12 +6,12 @@ use 5.010; no feature 'switch';
 =head1 SYNOPSIS
 
  Resolve* and convert absolute symlinks to relative or vice versa:
-   > relink abs2rel [-nvcCFBgbws] [-d DEPTH] [-t TARG] --      PATH(s)
-   > relink rel2abs [-nvcCFBgbws] [-d DEPTH] [-t TARG] --      PATH(s)
+   > relink abs2rel [-nvcCFBgbpws] [-d DEPTH] [-t TARG] --      PATH(s)
+   > relink rel2abs [-nvcCFBgbpws] [-d DEPTH] [-t TARG] --      PATH(s)
  Rewrite symlinks with Perl:
-   > relink rewrite [-nvcCFBgbws] [-d DEPTH] [-t TARG] -- EXPR PATH(s)
+   > relink rewrite [-nvcCFBgbpws] [-d DEPTH] [-t TARG] -- EXPR PATH(s)
  Just list symlinks:
-   > relink list    [-lvcCFBgbws] [-d DEPTH] [-t TARG] --      PATH(s)
+   > relink list    [-lvcCFBgbpws] [-d DEPTH] [-t TARG] --      PATH(s)
  OPTIONS:
    -n - Dry-run: don't actually relink, just print what would be done.
         Note the EXPR and TARG Perl code will still be executed!
@@ -25,13 +25,14 @@ use 5.010; no feature 'switch';
    -B - Only operate on non-broken symlinks.
    -g - Alias for -B.
    -b - Only operate on broken symlinks.
+   -p - Equivalent of "-t '$FULL=~/^$FULL_PATHS/'"*
    -w - Cause Perl code to be evaluated with "use warnings" enabled.
    -s - Cause Perl code to be evaluated with "use strict" enabled.
    -d - Specify the depth to which links should be resolved*. Valid
         values: integers, i/inf, f/full, p/path (default), n/none.
    -t - TARG is a piece of Perl code*, for example: "m{^/foo/}"
         $_ is the link's target (readlink). If the code returns false,
-        the link is not processed. -t is applied after -b/-B.
+        the link is not processed. -t is applied after -B/-b/-p.
    Note: The "--" may be omitted if you are certain that neither
      EXPR nor PATH(s) begins with a "-", even after shell expansions.
  EXPR: A piece of Perl code*, for example: "s/foo/bar/"
@@ -152,12 +153,17 @@ in turn is the equivalent of using C<abs_path>).
 =item C<$PATHS>
 
 This is a precompiled regular expression that matches all the C<PATH(s)>
-listed on the command line. For example, the following will list only
-those links from C<PATHS> whose I<final targets> are also in C<PATHS>
-(note that since we're matching against the fully resolved link target
-C<$FULL>, C<PATHS> must be absolute pathnames for this to work correctly).
+listed on the command line, as they were passed to the program.
 
- relink list -vt '$FULL=~/^$PATHS/' -- PATHS
+=item C<$FULL_PATHS>
+
+This is a precompiled regular expression that matches all the C<PATH(s)>
+listed on the command line, after they are converted to absolute paths and
+were fully resolved. For example, the following will list only those links
+from C<PATHS> whose I<final targets> are also in C<PATHS>.
+This is also the exact equivalent of the C<-p> option.
+
+ relink list -vt '$FULL=~/^$FULL_PATHS/' -- PATHS
 
 =back
 
@@ -321,7 +327,7 @@ use Term::ANSIColor qw/colored/;
 	use File::Basename 'fileparse';
 	*is_abs = *is_abs = \&file_name_is_absolute;
 	*resolvesymlink = *resolvesymlink = \&main::resolvesymlink;
-	our ($PATHS);
+	our ($PATHS, $FULL_PATHS);
 	our ($FILE, $PATH, $ABSPATH, $BROKEN);
 	our ($ABSOLUTE, $RESOLVED, $FULL);
 }
@@ -363,7 +369,7 @@ pod2usage("Bad command $COMMAND")
 	unless $COMMAND eq 'list' || $COMMAND eq 'abs2rel'
 	|| $COMMAND eq 'rel2abs' || $COMMAND eq 'rewrite';
 
-getopts('nlvcCFBgbwsd:t:', \my %opts) or pod2usage;
+getopts('nlvcCFBgbpwsd:t:', \my %opts) or pod2usage;
 my $DRYRUN       =  !!$opts{n};
 my $LIST_LONG    =  !!$opts{l};
 my $VERBOSE      =  !!$opts{v};
@@ -373,6 +379,7 @@ my $DONT_FIND    =  !!$opts{F};
 my $ONLY_GOOD    = (!!$opts{B})
                 || (!!$opts{g});
 my $ONLY_BROKEN  =  !!$opts{b};
+my $ONLY_PATHS   =  !!$opts{p};
 my $USE_WARNINGS =  !!$opts{w};
 my $USE_STRICT   =  !!$opts{s};
 my $RESOLVEDEPTH =    $opts{d};
@@ -415,6 +422,11 @@ my @PATHS = @ARGV;
 my $paths_re = join '|', map {quotemeta}
 	sort {length($b)<=>length($a) or $a cmp $b} @PATHS;
 $CodeEval::PATHS = qr/$paths_re/;
+my ($FULL_PATHS_RE) = map {qr/$_/}
+	join '|', map {quotemeta}
+	sort {length($b)<=>length($a) or $a cmp $b}
+	map { resolvesymlink(rel2abs($_),'full') } @PATHS;
+$CodeEval::FULL_PATHS = $FULL_PATHS_RE;
 
 my @ops; # delay changing files until done traversing
 
@@ -448,6 +460,7 @@ sub handle_file {  ## no critic (ProhibitExcessComplexity)
 	# is read-/stat-able or not, just whether it exists.
 	my $goodlink = -l $rl2a || -e $rl2a;
 	return if $ONLY_GOOD && !$goodlink || $ONLY_BROKEN && $goodlink;
+	return if $ONLY_PATHS && resolvesymlink($rl2a,'full')!~/^$FULL_PATHS_RE/;
 	my $reslink = resolvesymlink($rl2a,$RESOLVEDEPTH);
 	# prepare for Perl code exec (if needed)
 	my $perleval = defined $TARGEXPR || $COMMAND eq 'rewrite' ? sub {

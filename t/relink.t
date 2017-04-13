@@ -233,7 +233,21 @@ ENDLIST
 subtest 'targ tests' => sub {
 	my $dir = setup_new_dir();
 	# Test the use case mentioned in the docs
-	subtest 'list -vt' => mksubtest_relink(['list','-vt','$FULL=~/^$PATHS/','--',"$dir/bar"],<<"STDOUT",'');
+	subtest 'list -vt FULL_PATHS' => mksubtest_relink(['list','-vt','$FULL=~/^$FULL_PATHS/','--',"bar"],<<"STDOUT",'');
+bar/ddd -> $dir/bar/two (-> $dir/bar/two)
+bar/hhh -> notdead (-> $dir/bar/notdead)
+bar/iii -> $dir/bar/ddd (-> $dir/bar/ddd)
+bar/jjj -> ../foo/bbb (-> $dir/foo/bbb)
+STDOUT
+	# -p should be the equivalent of the above
+	subtest 'list -vp' => mksubtest_relink(['list','-vp','--',"bar"],<<"STDOUT",'');
+bar/ddd -> $dir/bar/two (-> $dir/bar/two)
+bar/hhh -> notdead (-> $dir/bar/notdead)
+bar/iii -> $dir/bar/ddd (-> $dir/bar/ddd)
+bar/jjj -> ../foo/bbb (-> $dir/foo/bbb)
+STDOUT
+	# Test the same use case mentioned in the docs, but with $PATHS
+	subtest 'list -vt PATHS' => mksubtest_relink(['list','-vt','$FULL=~/^$PATHS/','--',"$dir/bar"],<<"STDOUT",'');
 $dir/bar/ddd -> $dir/bar/two (-> $dir/bar/two)
 $dir/bar/hhh -> notdead (-> $dir/bar/notdead)
 $dir/bar/iii -> $dir/bar/ddd (-> $dir/bar/ddd)
