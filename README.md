@@ -12,6 +12,10 @@ A collection of various software tools and scripts.
 	
 	Rewrite symbolic links with Perl.
 	
+*	**`htmlrescache`**
+	
+	HTML Resource Cacher implemented as a git filter.
+	
 *	**`tcpstreams`**
 	
 	Dump TCP streams from `.pcap` files using `tshark`, in ASCII or binary.

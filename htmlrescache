@@ -1,0 +1,269 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+use feature qw/say state/; # need >=5.010 for regex vars
+use Getopt::Std 'getopts';
+use Pod::Usage 'pod2usage';
+use File::Spec::Functions qw/ rel2abs splitdir abs2rel catfile catdir /;
+use File::Basename qw/fileparse/;
+use File::Path qw/make_path/;
+use URI;
+
+=head1 SYNOPSIS
+
+This is the B<HTML Resource Cacher>.
+For details, see C<perldoc htmlrescache>.
+
+ htmlrescache [-cCACHEDIR] [-wqdD] COMMAND
+ Commands:
+   init         - Set up in this git repository
+   clean FILE   - Clean the file (called from git)
+   smudge FILE  - Smudge the file (called from git)
+ Options:
+   -c   - Change cache dir (default is "_cache"; relative to CWD)
+   -w   - Use external wget instead of HTTP::Tiny
+   -q   - Quiet (less output on init)
+   -d   - Enable debug output
+   -D   - On init, set up clean/smudge for debug output
+
+=head1 DESCRIPTION
+
+If you have a git repository with HTML files that contain
+C<< <link href="..."> >> and/or C<< <script src="..."> >> tags,
+this tool will cache the linked resources locally, and rewrite the
+HTML files to point to the URLs of the locally cached resources.
+It does this by implementing a git filter (see L<gitattributes(5)>),
+so that the files that are committed to the repository still
+contain the original URLs, and the URL rewrites will not show up
+in diffs etc.
+
+In a git repository, run the command C<htmlrescache init>, this
+will set up the cache directory (defaults to F<_cache> in the root
+of the git working directory), initialize the git configuration to
+add the filter, and create a F<.gitattributes> file if it does not
+exist. If the F<.gitattributes> file already exists, this tool
+will I<not> modify it; you will need to make sure that the filter
+is set up yourself (e.g. C<*.html	filter=htmlrescache>).
+
+Then, in your HTML files, the C<link> and C<script> tags that are
+to be rewritten must be on a single line, prefixed with the
+comment C<< <!--cacheable--> >>, for example:
+
+ <!--cacheable--><link rel="stylesheet" href="https://example.com/example.css" />
+ <!--cacheable--><script src="https://example.com/example.js"></script>
+
+The "smudge" command will be executed by git when you check out
+files, it will cause the URLs to be fetched into the cache and the
+tags to be rewritten. The "clean" command will change the tags
+back to their original form, so that this "clean" version is
+written to the repository. Note that in order to rewrite existing
+files after adding the filter, you may need to delete the local
+files and force a checkout so the "smudge" filter is applied.
+
+B<It is important> that you do not edit the comments of cached
+resources so that the "clean" filter still works properly.
+
+Note: If this tool is updated and the format of the tags changes,
+you may need to run C<git add --renormalize .> in your repository.
+
+=head1 AUTHOR, COPYRIGHT, AND LICENSE
+
+Copyright (c) 2018 Hauke Daempfling (haukex@zero-g.net)
+at the Leibniz Institute of Freshwater Ecology and Inland Fisheries (IGB),
+Berlin, Germany, L<http://www.igb-berlin.de/>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but B<WITHOUT ANY WARRANTY>; without even the implied warranty of
+B<MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE>. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see L<http://www.gnu.org/licenses/>.
+
+=cut
+
+# Possible To-Do for Later: The "clean" command is actually very much simpler than "smudge"
+# and "init", which means that it *could* be optimized by splitting it into its own script...
+
+sub HELP_MESSAGE { pod2usage(-output=>shift) }
+sub VERSION_MESSAGE { say {shift} q$htmlrescache v0.01$ }
+$Getopt::Std::STANDARD_HELP_VERSION = 1;
+getopts('c:wqdD', \my %opts) or pod2usage("Bad options");
+
+@ARGV or pod2usage("Not enough arguments");
+my $CMD = shift @ARGV;
+
+my $DEBUG = !!$opts{d};
+if ($DEBUG) { require Data::Dump; Data::Dump->import('pp') }
+my $DEBUG_FULL = !!$opts{D};
+warn "Warning: Option -D only useful on init\n"
+	if $DEBUG_FULL && $CMD ne 'init';
+
+my $USE_WGET = !!$opts{w};
+if (!$USE_WGET) { require HTTP::Tiny }
+
+my $QUIET = !!$opts{q};
+
+sub get_git_wd {
+	state $wd;
+	unless (defined $wd) {
+		chomp( $wd = `git rev-parse --show-toplevel` );
+		-d $wd or die "Failed to find git working directory (\$?=$?)";
+	}
+	return $wd;
+}
+
+my $CACHEDIR = length $opts{c} ? rel2abs($opts{c}) : catdir(get_git_wd,'_cache');
+make_path($CACHEDIR) unless $CMD eq 'clean';
+
+# yes, I know, parsing HTML with regexes, boo, hiss ;-)
+# http://www.perlmonks.org/?node_id=1201438
+my $cacheable_str = 'cacheable';
+my $cached_str = 'CACHED FROM ';
+my $regex = qr{ ^ \s*
+		<!-- (?<comment>
+			\Q$cacheable_str\E
+		|	\  \Q$cached_str\E ".+" \  
+		) --> \s*
+		< (?<tag> (?i:script|link) ) \b
+			[^>]+
+			\b (?i:src|href) \s* = \s*
+				(?<url> ( ["'] )
+					(?: (?! \g-1 | > ) . )+
+				\g-1 )
+			[^>]*
+		(?: /> | > \s* </ (?i: \k{tag} ) > )
+	\s* $ }msx;
+
+my %cacheidx; # a global var for docache
+
+if ( $CMD eq 'clean' || $CMD eq 'smudge' ) {
+	pod2usage("Bad arguments") unless @ARGV==1;
+	my $FILE = shift @ARGV;
+	
+	my $indexfn = catfile($CACHEDIR,'.index');
+	if ( $CMD eq 'smudge' and open my $fh, '<', $indexfn ) {
+		while (<$fh>) {
+			chomp;
+			if (/\A([^\t]+)\t([^\t]+)\z/)
+				{ $cacheidx{$1} = $2 }
+			else { warn "bad $indexfn line: <$_>" }
+		}
+	}
+	
+	$DEBUG and say STDERR "----- $CMD $FILE -----";
+	while (my $line = <>) {
+		$line=~$regex or next;
+		# remember to always modify $$urlstr first, then $$comment
+		my $comment = \substr($line, $-[1], $+[1] - $-[1]);
+		my $urlstr  = \substr($line, $-[3], $+[3] - $-[3]);
+		if ( $CMD eq 'clean' && $$comment=~m{ \A \  \Q$cached_str\E (".+") \  \z }msx ) {
+			$DEBUG and say STDERR "<<<<<",pp($line);
+			$$urlstr = $1;
+			$$comment = $cacheable_str;
+			$DEBUG and say STDERR ">>>>>",pp($line);
+		}
+		elsif ( $CMD eq 'smudge' && $$comment eq $cacheable_str ) {
+			$DEBUG and say STDERR "<<<<<",pp($line);
+			my $origurlstr = "$$urlstr";
+			my $newurl = ''.docache( catfile(get_git_wd,$FILE), substr($$urlstr, 1, -1) );
+			die "Quotes in new URL? $newurl" if $newurl=~/"/;
+			$$urlstr = '"'.$newurl.'"';
+			$$comment = " $cached_str$origurlstr ";
+			$DEBUG and say STDERR ">>>>>",pp($line);
+		}
+	} continue { print $line }
+	
+	if ($CMD eq 'smudge') {
+		if ( open my $fh, '>', $indexfn ) {
+			for my $k (sort keys %cacheidx) {
+				die "tabs/newlines in URL/filename? (<$k>/<$cacheidx{$k}>)"
+					if ($k.$cacheidx{$k}) =~ /[\t\n]/;
+				print $fh "$k\t$cacheidx{$k}\n";
+			}
+		}
+		else { warn "$indexfn: $!" }
+	}
+	
+}
+elsif ( $CMD eq 'init' ) {
+	pod2usage("Too many arguments") if @ARGV;
+	use FindBin;
+	require ShellQuote::Any;
+	my $script = ShellQuote::Any::shell_quote([ $^X,
+		catfile($FindBin::Bin, $FindBin::Script), '-c'.$CACHEDIR,
+		($DEBUG_FULL?'-d':()), ($USE_WGET?'-w':()) ]);
+	$QUIET or say STDERR "setting git config to call $script";
+	system('git','config','--local','filter.htmlrescache.smudge',$script.' smudge %f')==0 or die "\$?=$?";
+	system('git','config','--local','filter.htmlrescache.clean', $script.' clean %f' )==0 or die "\$?=$?";
+	my $ga = catfile(get_git_wd,'.gitattributes');
+	if (-e $ga) {
+		my $found = 0;
+		open my $fh, '<', $ga or die "$ga: $!";
+		while (<$fh>) {
+			$found=1 if /^\s*+[^#].*\bfilter=htmlrescache\b/;
+		}
+		close $fh;
+		$QUIET or say STDERR "filter=htmlrescache ".($found?'':'NOT ')."found in $ga";
+	}
+	else {
+		open my $fh, '>', $ga or die "$ga: $!";
+		print $fh "*.html\tfilter=htmlrescache\n";
+		close $fh;
+		$QUIET or say STDERR "created $ga";
+	}
+}
+else { pod2usage("Bad command") }
+
+sub docache {
+	my ($file, $oldurl) = @_;
+	$DEBUG and say STDERR "file=",pp($file);
+	
+	my $url = URI->new($oldurl);
+	$DEBUG and say STDERR "url=",pp("$url");
+	return $oldurl if $url->host eq 'localhost' || $url->host eq '127.0.0.1';
+	my $url_fn = ($url->path_segments)[-1];
+	if (!length($url_fn)) { warn "failed to resolve filename of $url"; return $oldurl }
+	my $cachedfile = catfile($CACHEDIR, $url_fn);
+	$DEBUG and say STDERR "cachedfile=",pp($cachedfile);
+	
+	my (undef,$path) = fileparse($file);
+	my $newurl = URI->new();
+	$newurl->path_segments( splitdir( abs2rel($cachedfile, $path) ) );
+	$DEBUG and say STDERR "newurl=",pp("$newurl");
+	
+	if (exists $cacheidx{$url_fn}) {
+		die "two URLs with the same basename not (yet) supported (<$cacheidx{$url_fn}>/<$oldurl>)"
+			unless $cacheidx{$url_fn} eq $oldurl;
+		if (-f $cachedfile) {
+			$DEBUG and say STDERR "$oldurl: already in cache";
+			return $newurl;
+		}
+	} # else
+	dofetch($oldurl, $cachedfile);
+	$cacheidx{$url_fn} = $oldurl;
+	
+	return $newurl;
+}
+
+sub dofetch {
+	my ($url, $file) = @_;
+	state $http = $USE_WGET ? undef : HTTP::Tiny->new;
+	if ($USE_WGET) {
+		# Note: wget's timestamping (-N) doesn't work with -O
+		system('wget', $DEBUG?'-nv':'-q', '-O'.$file, $url)==0
+			or die "wget failed, \$?=$?\n";
+	}
+	else {
+		$DEBUG and print STDERR "$url: ";
+		my $resp = $http->mirror($url, $file);
+		die "$resp->{status} $resp->{reason}\n" unless $resp->{success};
+		$DEBUG and say STDERR "$resp->{status} $resp->{reason}";
+	}
+}
+
