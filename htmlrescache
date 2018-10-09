@@ -91,7 +91,7 @@ along with this program. If not, see L<http://www.gnu.org/licenses/>.
 # and "init", which means that it *could* be optimized by splitting it into its own script...
 
 sub HELP_MESSAGE { pod2usage(-output=>shift) }
-sub VERSION_MESSAGE { say {shift} q$htmlrescache v0.01$ }
+sub VERSION_MESSAGE { say {shift} q$htmlrescache v0.02$ }
 $Getopt::Std::STANDARD_HELP_VERSION = 1;
 getopts('c:wqdD', \my %opts) or pod2usage("Bad options");
 
@@ -121,10 +121,11 @@ sub get_git_wd {
 my $CACHEDIR = length $opts{c} ? rel2abs($opts{c}) : catdir(get_git_wd,'_cache');
 make_path($CACHEDIR) unless $CMD eq 'clean';
 
-# yes, I know, parsing HTML with regexes, boo, hiss ;-)
-# http://www.perlmonks.org/?node_id=1201438
+# remember no double dashes in these two
 my $cacheable_str = 'cacheable';
 my $cached_str = 'CACHED FROM ';
+# yes, I know, parsing HTML with regexes, boo, hiss ;-)
+# http://www.perlmonks.org/?node_id=1201438
 my $regex = qr{ ^ \s*
 		<!-- (?<comment>
 			\Q$cacheable_str\E
@@ -173,6 +174,10 @@ if ( $CMD eq 'clean' || $CMD eq 'smudge' ) {
 			my $origurlstr = "$$urlstr";
 			my $newurl = ''.docache( catfile(get_git_wd,$FILE), substr($$urlstr, 1, -1) );
 			die "Quotes in new URL? $newurl" if $newurl=~/"/;
+			die "Can't handle this URL b/c of '-->': $origurlstr\n"
+				if $origurlstr=~/-->/;
+			warn "Warning: HTML comments shouldn't contain double dashes ($origurlstr)\n"
+				if $origurlstr=~/--/;
 			$$urlstr = '"'.$newurl.'"';
 			$$comment = " $cached_str$origurlstr ";
 			$DEBUG and say STDERR ">>>>>",pp($line);
