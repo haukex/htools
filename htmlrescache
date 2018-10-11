@@ -1,12 +1,13 @@
 #!/usr/bin/env perl
 use warnings;
 use strict;
-use feature qw/say state/; # need >=5.010 for regex vars
+use feature qw/say state/; # also need >=5.010 for regex vars
 use Getopt::Std 'getopts';
 use Pod::Usage 'pod2usage';
-use File::Spec::Functions qw/ rel2abs splitdir abs2rel catfile catdir /;
+use File::Spec::Functions qw/ rel2abs splitdir abs2rel catfile catdir file_name_is_absolute /;
 use File::Basename qw/fileparse/;
 use File::Path qw/make_path/;
+use Cwd qw/getcwd/;
 use URI;
 
 =head1 SYNOPSIS
@@ -14,15 +15,18 @@ use URI;
 This is the B<HTML Resource Cacher>.
 For details, see C<perldoc htmlrescache>.
 
- htmlrescache [-cCACHEDIR] [-wqdD] COMMAND
+ htmlrescache [-cCACHEDIR] [-wqGdD] [-i/-I EXT] COMMAND
  Commands:
    init         - Set up in this git repository
-   clean FILE   - Clean the file (called from git)
-   smudge FILE  - Smudge the file (called from git)
+   clean FILE   - Clean the file (usually called from git)
+   smudge FILE  - Smudge the file (usually called from git)
  Options:
    -c   - Change cache dir (default is "_cache"; relative to CWD)
    -w   - Use external wget instead of HTTP::Tiny
    -q   - Quiet (less output on init)
+   -i   - Modify FILE inplace, not STDIN/STDOUT
+   -I   - Same as -i, but specify extension for backup file
+   -G   - Don't resolve git working dir, use CWD instead
    -d   - Enable debug output
    -D   - On init, set up clean/smudge for debug output
 
@@ -66,6 +70,20 @@ resources so that the "clean" filter still works properly.
 Note: If this tool is updated and the format of the tags changes,
 you may need to run C<git add --renormalize .> in your repository.
 
+=head2 STANDALONE OPERATION
+
+You may use the C<-i> option to modify files inplace, instead of
+this filter reading C<STDIN> and writing to C<STDOUT>. This
+operation is useful if you want to run C<htmlrescache> manually
+from the command line. You can specify an extension with which to
+backup the original file using the C<-I> option instead of C<-i>.
+
+If you want to operate on files outside of git repositories, you
+must either: 1. specify absolute filenames and use the C<-c>
+option, or 2. use the C<-G> option to disable git working
+directory resolution; filenames will be resolved relative to the
+current working directory instead.
+
 =head1 AUTHOR, COPYRIGHT, AND LICENSE
 
 Copyright (c) 2018 Hauke Daempfling (haukex@zero-g.net)
@@ -91,9 +109,9 @@ along with this program. If not, see L<http://www.gnu.org/licenses/>.
 # and "init", which means that it *could* be optimized by splitting it into its own script...
 
 sub HELP_MESSAGE { pod2usage(-output=>shift) }
-sub VERSION_MESSAGE { say {shift} q$htmlrescache v0.02$ }
+sub VERSION_MESSAGE { say {shift} q$htmlrescache v0.03$ }
 $Getopt::Std::STANDARD_HELP_VERSION = 1;
-getopts('c:wqdD', \my %opts) or pod2usage("Bad options");
+getopts('c:wqGiI:dD', \my %opts) or pod2usage("Bad options");
 
 @ARGV or pod2usage("Not enough arguments");
 my $CMD = shift @ARGV;
@@ -107,13 +125,20 @@ warn "Warning: Option -D only useful on init\n"
 my $USE_WGET = !!$opts{w};
 if (!$USE_WGET) { require HTTP::Tiny }
 
+my $NO_GIT = !!$opts{G};
+pod2usage("Can only use -G on clean/smudge")
+	if $NO_GIT && !($CMD eq 'clean' || $CMD eq 'smudge');
+
 my $QUIET = !!$opts{q};
+my $INPLACE = defined($opts{I}) ? $opts{I} : ($opts{i} ? '' : undef);
 
 sub get_git_wd {
+	return getcwd if $NO_GIT;
 	state $wd;
 	unless (defined $wd) {
 		chomp( $wd = `git rev-parse --show-toplevel` );
-		-d $wd or die "Failed to find git working directory (\$?=$?)";
+		$?==0 && length $wd && -d $wd
+			or die "Failed to find git working directory (\$?=$?)";
 	}
 	return $wd;
 }
@@ -145,7 +170,9 @@ my %cacheidx; # a global var for docache
 
 if ( $CMD eq 'clean' || $CMD eq 'smudge' ) {
 	pod2usage("Bad arguments") unless @ARGV==1;
-	my $FILE = shift @ARGV;
+	my $FILE = defined $INPLACE ? $ARGV[0] : shift @ARGV;
+	$FILE = rel2abs($FILE,get_git_wd) unless file_name_is_absolute($FILE); # don't call get_git_wd unless necessary
+	local $^I = $INPLACE;
 	
 	my $indexfn = catfile($CACHEDIR,'.index');
 	if ( $CMD eq 'smudge' and open my $fh, '<', $indexfn ) {
@@ -172,7 +199,7 @@ if ( $CMD eq 'clean' || $CMD eq 'smudge' ) {
 		elsif ( $CMD eq 'smudge' && $$comment eq $cacheable_str ) {
 			$DEBUG and say STDERR "<<<<<",pp($line);
 			my $origurlstr = "$$urlstr";
-			my $newurl = ''.docache( catfile(get_git_wd,$FILE), substr($$urlstr, 1, -1) );
+			my $newurl = ''.docache( $FILE, substr($$urlstr, 1, -1) );
 			die "Quotes in new URL? $newurl" if $newurl=~/"/;
 			die "Can't handle this URL b/c of '-->': $origurlstr\n"
 				if $origurlstr=~/-->/;
@@ -198,6 +225,7 @@ if ( $CMD eq 'clean' || $CMD eq 'smudge' ) {
 }
 elsif ( $CMD eq 'init' ) {
 	pod2usage("Too many arguments") if @ARGV;
+	pod2suage("Can't use -G on init") if $NO_GIT;
 	use FindBin;
 	require ShellQuote::Any;
 	my $script = ShellQuote::Any::shell_quote([ $^X,
@@ -223,7 +251,7 @@ elsif ( $CMD eq 'init' ) {
 		$QUIET or say STDERR "created $ga";
 	}
 }
-else { pod2usage("Bad command") }
+else { pod2usage("Bad command: \"$CMD\"") }
 
 sub docache {
 	my ($file, $oldurl) = @_;

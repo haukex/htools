@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use warnings;
 use strict;
-use Test::More tests => 9;
+use Test::More tests => 13;
 
 =head1 SYNOPSIS
 
@@ -40,9 +40,9 @@ BEGIN {
 	-f -x $TARGET or die "Could not find target script $TARGET";
 	note "Am testing $TARGET";
 }
-use IPC::Run3::Shell
+use IPC::Run3::Shell 0.56
 	{ show_cmd => Test::More->builder->output },
-	'git',
+	 ':FATAL', 'git',
 	[ htmlrescache => $^X, $TARGET ];
 
 # set up temp dir
@@ -86,11 +86,12 @@ $testfile2->remove;
 git 'checkout', '-f', $testfile1, $testfile2;
 
 # check smudged files
-is $testfile1->slurp, <<'END_HTML', "smudged $testfile1";
+my $smudged_one = <<'END_HTML';
 one
 <!-- CACHED FROM "https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.0/normalize.min.css" --><link rel="stylesheet" href="_cache/normalize.min.css" integrity="sha256-oSrCnRYXvHG31SBifqP2PM1uje7SJUyX0nTwO2RJV54=" crossorigin="anonymous" />
 <!-- CACHED FROM "https://code.jquery.com/jquery-3.3.1.min.js" --><script src="_cache/jquery-3.3.1.min.js" integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8=" crossorigin="anonymous"></script>
 END_HTML
+is $testfile1->slurp, $smudged_one, "smudged $testfile1";
 is $testfile2->slurp, <<'END_HTML', "smudged $testfile2";
 two
 <!-- CACHED FROM "https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.0/normalize.min.css" --><link rel="stylesheet" href="../../_cache/normalize.min.css" integrity="sha256-oSrCnRYXvHG31SBifqP2PM1uje7SJUyX0nTwO2RJV54=" crossorigin="anonymous" />
@@ -99,6 +100,7 @@ END_HTML
 
 # modify files (so clean will have something to do)
 { print {$testfile1->opena} "111\n"; }
+$smudged_one .= "111\n";
 { print {$testfile2->opena} "222\n"; }
 git 'commit', '-aqm', 'bar';
 
@@ -110,7 +112,8 @@ sub getblob {
 	my ($blobsha) = $l =~ /\A\S+\ \S+\ ([0-9A-Fa-f]+)\t.+\0\z/ or die $l;
 	return scalar git 'cat-file', '-p', $blobsha;
 }
-is getblob($testfile1), "one\n${TESTHTML}111\n", "clean $testfile1";
+my $clean_one = "one\n${TESTHTML}111\n";
+is getblob($testfile1), $clean_one, "clean $testfile1";
 is getblob($testfile2), "two\n${TESTHTML}222\n", "clean $testfile2";
 
 # check cached files
@@ -130,5 +133,14 @@ normalize.min.css	https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.0/normali
 END_INDEXF
 
 #TODO Later: Tests for a different cache directory - possibly even outside git WD?
+
+# check inplace operation
+is $testfile1->slurp, $smudged_one, 'inplace check';
+htmlrescache +($DEBUG?'-d':'-q'), '-Gi', 'clean', $testfile1;
+is $testfile1->slurp, $clean_one, 'inplace clean';
+htmlrescache +($DEBUG?'-d':'-q'), '-GI.bak', 'smudge', $testfile1;
+is $testfile1->slurp, $smudged_one, 'inplace smudge';
+my $testfile1_bak = $testfile1->dir->file( $testfile1->basename.".bak" );
+is $testfile1_bak->slurp, $clean_one, 'inplace smudge backup';
 
 done_testing;
