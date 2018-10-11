@@ -109,7 +109,7 @@ along with this program. If not, see L<http://www.gnu.org/licenses/>.
 # and "init", which means that it *could* be optimized by splitting it into its own script...
 
 sub HELP_MESSAGE { pod2usage(-output=>shift) }
-sub VERSION_MESSAGE { say {shift} q$htmlrescache v0.03$ }
+sub VERSION_MESSAGE { say {shift} q$htmlrescache v0.04$ }
 $Getopt::Std::STANDARD_HELP_VERSION = 1;
 getopts('c:wqGiI:dD', \my %opts) or pod2usage("Bad options");
 
@@ -225,7 +225,7 @@ if ( $CMD eq 'clean' || $CMD eq 'smudge' ) {
 }
 elsif ( $CMD eq 'init' ) {
 	pod2usage("Too many arguments") if @ARGV;
-	pod2suage("Can't use -G on init") if $NO_GIT;
+	pod2usage("Can't use -G on init") if $NO_GIT;
 	use FindBin;
 	require ShellQuote::Any;
 	my $script = ShellQuote::Any::shell_quote([ $^X,
