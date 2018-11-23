@@ -1,0 +1,164 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+use Getopt::Long qw/ HelpMessage :config posix_default gnu_compat bundling auto_help /;
+use Path::Class qw/file dir/;
+use File::Find::Rule qw/rule/;
+use Text::CleanFragment qw/clean_fragment/;
+use Archive::Extract ();
+use File::Copy qw/move/;
+use IPC::System::Simple qw/capturex/;
+use String::LCSS qw/lcss/;
+
+=head1 SYNOPSIS
+
+ smartunpack [OPTIONS] ARCHIVE [TARGETDIR]
+ smartunpack [OPTIONS] --recursive|-r [DIR]
+ Options:
+   -q | --quiet    - Be quiet
+   -v | --verbose  - Be verbose
+
+See also C<perldoc smartunpack>.
+
+=head1 DESCRIPTION
+
+I don't like having to check whether an archive contains a
+toplevel directory or not, and whether that toplevel directory has
+the same name as the archive or not. This tool attempts to solve
+that issue. It will always generate a toplevel directory, using
+either the toplevel directory contained within the archive, or the
+name of the archive file. Currently, the longer directory name
+wins, but this heuristic may be improved upon in the future.
+
+When used in C<--recursive> mode, it will search for and unpack
+any supported archives below the specified directory, and will
+repeat its search after every unpack to take care of any archives
+contained within archives.
+
+In general this tool will refuse to overwrite any files,
+I<however>, it is assumed that the archives themselves are
+well-behaved, that is, they don't unpack outside of the target
+directory and the underlying unpacking tools don't overwrite files
+themselves. There are possible race conditions if anyone else is
+accessing the same directories.
+
+Although the basic functionality has tests and works, I would still
+call this version a B<beta> because I may improve/change the
+functionality, and more tests are always better. See also the
+"TOZ<>DO"s marked in the code.
+
+=head1 AUTHOR, COPYRIGHT, AND LICENSE
+
+Copyright (c) 2018 Hauke Daempfling (haukex@zero-g.net)
+at the Leibniz Institute of Freshwater Ecology and Inland Fisheries (IGB),
+Berlin, Germany, L<http://www.igb-berlin.de/>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but B<WITHOUT ANY WARRANTY>; without even the implied warranty of
+B<MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE>. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see L<http://www.gnu.org/licenses/>.
+
+=cut
+
+our $VERSION = '0.01-beta';
+
+# All the known archive types from Archive::Extract 0.80 plus .7z
+my $EXT_RE = qr/\.(?: 7z|tar\.gz|tgz|gz|zip|jar|ear|war|par|tbz2?
+	|tar\.bz2?|bz2|txz|tar\.xz|xz|tar|(?-i:Z)|(?-i:lzma) )\z/xi;
+
+my %opts = ( version => sub { print "smartunpack v$VERSION\n"; exit } );
+GetOptions(\%opts, 'version', 'recursive|r', 'quiet|q', 'verbose|v')
+	or HelpMessage(-exitval=>255);
+
+if ($opts{recursive}) {
+	HelpMessage(-msg=>'Too many arguments',-exitval=>255) if @ARGV>1;
+	my $dir;
+	if (@ARGV) {
+		$dir = dir(shift @ARGV);
+		die "Not found or not a readable directory: $dir"
+			unless length($dir) && -r -d $dir;
+	} else { $dir = dir() }
+	my %visited;
+	while ( my @arcs = grep {!$visited{$_}} rule->file->name($EXT_RE)->in($dir) ) {
+		for my $arc (@arcs) {
+			my $f = file($arc);
+			smart_unpack( $f, $f->dir );
+			$visited{$arc}++;
+		}
+	}
+}
+else {
+	HelpMessage(-msg=>'Not enough arguments',-exitval=>255) if @ARGV<1;
+	HelpMessage(-msg=>'Too many arguments',-exitval=>255) if @ARGV>2;
+	my $arc = file(shift @ARGV);
+	my $targ = @ARGV ? dir(shift @ARGV) : dir();
+	smart_unpack( $arc, $targ );
+}
+
+sub smart_unpack {
+	my ($archive,$target) = @_;
+	die "File not found or not a readable file: $archive"
+		unless length($archive) && -r -f $archive;
+	die "Target not found or not a writable directory: $target"
+		unless length($target) && -w -d $target;
+	print "Working on $archive...\n" unless $opts{quiet};
+	
+	my $temptarg = Path::Class::tempdir(CLEANUP=>1, DIR=>$target,
+		TEMPLATE=>'.'.clean_fragment($archive->basename).'_XXXXXXXXXX');
+	if ($archive->basename =~ /\.7z\z/i) {
+		# Archive::Extract doesn't handle 7z (yet)
+		my $o = capturex('7z', '-y', "-o$temptarg", 'x', "$archive");
+		print $o if $opts{verbose};
+	}
+	else {
+		my $ae = Archive::Extract->new(archive=>"$archive");
+		$ae->extract(to=>"$temptarg") or die $ae->error;
+		if ($opts{verbose})
+			{ print "$_\n" for @{$ae->files} }
+	}
+	#TODO Later: see Archive::Any::is_naughty
+	
+	( my $basename = $archive->basename ) =~ s/$EXT_RE//
+		or die "Failed to get basename of ".$archive->basename;
+	my @children = $temptarg->children;
+	my $moveto;
+	if ( @children==1 && $children[0]->is_dir ) {
+		my $int = $children[0]->basename; # the name of the one directory in the archive
+		my $ext = $basename; # the name of the archive itself
+		my $longer = length($int) > length($ext) ? $int : $ext;
+		if ($int ne $ext) {
+			my $lcss = lcss($int,$ext);
+			my $shared = 100 * length($lcss) / length($longer);
+			if ( length($lcss)<5 || $shared<25 ) { #TODO: what's the best thing to do in this case?
+				# probably we should add several different "informational" messages in addition to this case,
+				# such as "archive contains only directories at the top level",
+				# or "archive contains one directory with the same name as the archive and one text file"
+				#use Data::Dump; dd $int, $ext, $lcss;
+				#warn "Names '$int' and '$ext' seem different, extracting to '$longer'";
+			}
+		}
+		$moveto = $target->subdir($longer);
+		@children = $children[0]->children;
+	}
+	else {
+		$moveto = $target->subdir( $basename );
+	}
+	die "Target already exists: $moveto" if -e $moveto;
+	$moveto->mkpath(0); # dies on error
+	for my $src (@children) {
+		my $dest = $src->is_dir
+			? $moveto->subdir( $src->basename )
+			: $moveto->file(   $src->basename );
+		die "Destination already exists: $dest" if -e $dest;
+		move("$src","$dest") or die "failed to move $src to $dest: $!";
+	}
+	print "Unpacked into $moveto\n" unless $opts{quiet};
+}
