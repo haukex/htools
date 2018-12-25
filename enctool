@@ -490,6 +490,8 @@ Ranges may be specified with a dash (C<->) between two characters.
 Use C<\p{...}> to match a named Unicode property, or C<\P{...}> for
 the inverse. See L<perluniprops>. Cannot be used in ranges.
 
+See L<perlunicode/Unicode Character Properties> and L<perluniprops>.
+
 =item *
 
 Backslashes (C<\>), dashes (C<->), and carets (C<^>) must be escaped
