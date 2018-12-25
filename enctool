@@ -1,0 +1,562 @@
+#!/usr/bin/env perl
+use warnings;
+use 5.016; # need strict, say, state, fc, unicode_eval, and unicode_strings with quotemeta support
+no feature 'switch'; # enabled by the previous line, but experimental
+use warnings FATAL=>'utf8';
+use open (); # qw/:std :utf8/ is applied conditionally below
+use Getopt::Long qw/ HelpMessage :config posix_default gnu_compat bundling auto_help /;
+use Hash::Util qw/ lock_keys /;
+use Encode 2.10 qw/ decode /;
+use Encode::Guess; # exports guess_encoding
+use charnames ':full';
+use Data::Dumper; sub pp;
+#use IPC::Run3::Shell; # this is only loaded when file(1) is needed, below
+
+=head1 SYNOPSIS
+
+ enctool [OPTIONS] FILE(s)
+ Options:
+   -e | --encodings LIST  - comma-separated list of encodings to try
+   -E | --all-encodings   - try *all* supported encodings
+   -a | --test-all        - test all encodings on the list
+   -A | --all             - same as --all-encodings --test-all
+   -c | --list-chars      - list all control or non-ASCII chars
+   -d | --dump            - show each decoded file as a Perl string
+   -D | --dump-raw        - print each decoded file to the console
+   -k | --one-of STR      - at least one of these chars must be found
+   -K | --all-of STR      - all of these chars must be found
+   -n | --none-of STR     - none of these chars may be found
+   -N | --no-control      - no uncommon control chars may be found
+   -r | --recurse         - recurse into directories, skip .names
+   -R | --recurse-all     - recurse but include files/paths with dot
+   -b | --binary          - also test files that appear to be binary
+   -s | --size-limit INT  - don't check files larger than this
+   -g | --encode-guess    - query Encode::Guess as well
+   -f | --use-file        - query file(1) for encoding as well
+   -F | --full-file       - show regular file(1) output as well
+   -p | --ignore-plain    - don't report ASCII files with LF xor CRLF
+   -u | --ignore-utf-8    - don't report UTF-8 files with LF xor CRLF
+   -q | --quiet           - quiet some informational messages
+   -Q | --extra-quiet     - quiet even more info messages
+   -v | --verbose         - add some extra output
+   -V | --extra-verbose   - add even more extra output
+   -L | --list-encodings  - just list supported encodings and exit
+   -? | --help            - show this help message
+        --version         - show version and exit
+
+See also C<perldoc enctool>.
+
+=cut
+
+# For AUTHOR, COPYRIGHT, AND LICENSE see the bottom of this file
+
+our $VERSION = '0.03-beta';
+
+my $STDOUT_UTF8;
+if ( ${^UTF8LOCALE} ) { # this should be the equivalent of -CL
+	if ( !(${^UNICODE}&32) ) # if not already specified,
+		{ utf8::decode($_) for @ARGV } # this should be -CA
+	"open"->import(qw/:std :utf8/); # and this should be -CDS
+	$STDOUT_UTF8 = 1;
+}
+
+my %opts = ( version => sub { print "enctool v$VERSION\n"; exit } );
+GetOptions(\%opts, 'version',
+	'encodings|e=s', 'all-encodings|E', 'test-all|a', 'all|A', 'list-chars|c',
+	'dump|d', 'dump-raw|D', 'one-of|k=s', 'all-of|K=s', 'none-of|n=s',
+	'no-control|N', 'recurse|r', 'recurse-all|R', 'binary|b', 'size-limit|s=i',
+	'encode-guess|g', 'use-file|f', 'full-file|F', 'ignore-plain|p',
+	'ignore-utf-8|u', 'quiet|q', 'extra-quiet|Q', 'verbose|v',
+	'extra-verbose|V', 'list-encodings|L',
+	) or HelpMessage(-exitval=>255);
+$opts{'test-all'} = $opts{'all-encodings'} = 1 if delete $opts{all};
+lock_keys %opts, qw/ version encodings all-encodings test-all list-chars dump
+	dump-raw one-of all-of none-of no-control recurse recurse-all binary
+	size-limit encode-guess use-file full-file ignore-plain ignore-utf-8 quiet
+	extra-quiet verbose extra-verbose list-encodings /;
+$opts{recurse} = 1 if $opts{'recurse-all'};
+$opts{quiet}   = 1 if $opts{'extra-quiet'};
+$opts{verbose} = 1 if $opts{'extra-verbose'};
+
+if ($opts{'list-encodings'}) {
+	warn "Other options ignored when --list-encodings specified\n"
+		if ( join("\0", sort keys %opts) ne "list-encodings\0version"
+			|| @ARGV ) && !$opts{quiet};
+	say for sort { fc $a cmp fc $b } encout(Encode->encodings(':all'));
+	exit;
+}
+HelpMessage(-msg=>"No files specified", -exitval=>255)
+	unless @ARGV || $opts{recurse};
+
+my $I = "    "; # indent
+$opts{'size-limit'} //= 10e6;
+if ($opts{'use-file'} || $opts{'full-file'}) {
+	require IPC::Run3::Shell;
+	IPC::Run3::Shell->import(
+		[ file1 => {fail_on_stderr=>1, chomp=>1}, 'file' ] );
+}
+
+my $one_of; # qr{}
+if (length $opts{'one-of'}) {
+	($one_of) = map { qr/$_/ } join '|', map { ref ? $_ : quotemeta }
+		parse_chars($opts{'one-of'});
+}
+my @all_of; # array of qr{} and literal strings
+if (length $opts{'all-of'}) {
+	@all_of = parse_chars($opts{'all-of'});
+}
+my ($none_of) = do { # qr{}
+	my @nof;
+	push @nof, qr/\p{IsUncommonControl}/ if $opts{'no-control'};
+	push @nof, parse_chars($opts{'none-of'}) if length $opts{'none-of'};
+	!@nof ? undef :
+		map( { qr/$_/ } join '|', map { ref ? $_ : quotemeta } @nof );
+};
+
+our @ENCODINGS = qw/ ascii utf-8-strict iso-8859-1 cp1252 /;
+my $user_encodings =
+	defined($opts{encodings}) && $opts{encodings}=~/\S/ ? $opts{encodings}
+	: ( defined($ENV{ENCTOOL_ENCODINGS}) && $ENV{ENCTOOL_ENCODINGS}=~/\S/
+		? $ENV{ENCTOOL_ENCODINGS} : undef );
+if ( $opts{'all-encodings'} ) {
+	HelpMessage(-msg=>"Can't use --all-encodings and --encodings together",
+		-exitval=>255) if defined($opts{encodings}) && $opts{encodings}=~/\S/;
+	@ENCODINGS = ( 'ascii', grep {!/^ascii$/i}
+		sort { fc $a cmp fc $b } Encode->encodings(':all') );
+}
+elsif ( defined $user_encodings ) {
+	@ENCODINGS = split /,/, $user_encodings;
+	for my $e (@ENCODINGS) {
+		my $re = Encode::resolve_alias($e)
+			or die "Error: Invalid/unknown encoding ".pp($e)."\n";
+		$e = $re;
+	}
+}
+die "no encodings specified and/or supported" unless @ENCODINGS;
+my $disable_binary_check = grep { /^utf-(?:16|32)(?:be|le)?$/i } @ENCODINGS;
+
+my ($badfiles,$skipcount) = (0,0);
+
+if ($opts{recurse}) {
+	require File::Find;
+	require File::Spec;
+	require File::Basename;
+	File::Find::find({ no_chdir=>1, wanted => sub {
+			if ( !$opts{'recurse-all'}
+				&& File::Basename::fileparse($_)=~/^\.[^.]/ )
+					{ $File::Find::prune = $File::Find::prune = 1; return }
+			process($_) unless -d;
+		} },
+		@ARGV ? @ARGV : File::Spec->curdir );
+}
+else {
+	process($_) for @ARGV;
+}
+
+sub process { ## no critic (ProhibitExcessComplexity)
+	my $fn = shift;
+	my $data;
+	if ($fn eq '-') {
+		binmode STDIN;
+		$data = do { local $/=undef; <STDIN> };
+	}
+	else {
+		stat $fn or do { $badfiles++; warn "Error: stat '$fn' failed: $!"; return };
+		if (-d _) { say "$fn: directory, skipping" unless $opts{quiet}; $skipcount++; return }
+		if (-z _) { say "$fn: empty, skipping" unless $opts{quiet}; $skipcount++; return }
+		my $filesize = -s _;
+		if ($opts{'size-limit'}>0 && $filesize>$opts{'size-limit'}) {
+			say "$fn: over size limit ($filesize>".sprintf('%g',$opts{'size-limit'})
+				."), skipping (use -s to override)" unless $opts{quiet};
+			 $skipcount++; return }
+		if ( !$disable_binary_check && !$opts{binary} && -B _ )
+			{ say "$fn: probably binary, skipping (use -b to override)"
+				unless $opts{quiet}; $skipcount++; return }
+		open my $fh, '<:raw', $fn or do { $badfiles++; warn "Error: open '$fn' failed: $!"; return };
+		$data = do { local $/=undef; <$fh> };
+		close $fh;
+	}
+	
+	my @out;
+	
+	local @ENCODINGS = @ENCODINGS;
+	
+	if ($opts{'encode-guess'}) {
+		my $decoder = guess_encoding($data, @ENCODINGS);
+		if (ref($decoder)) {
+			my $e = $decoder->name;
+			push @out, "Encode::Guess thinks it is $e, added to list of tests" unless $opts{'extra-quiet'};
+			push @ENCODINGS, $decoder->name unless grep {$e eq $_} @ENCODINGS;
+		}
+		else
+			{ push @out, "Encode::Guess could not decide: $decoder" unless $opts{'extra-quiet'} }
+	}
+	
+	my $reset_stdout; # https://rt.cpan.org/Public/Bug/Display.html?id=69011 (IPC::Run3 messes up STDOUT layers)
+	if ($opts{'use-file'} && $fn ne '-') {
+		my $fe = file1('--brief', '--mime-encoding', $fn);
+		$reset_stdout=1;
+		if ($fe=~/\A[\x20-\x7E]+\z/aa) {
+			my $re = $fe eq 'binary' ? undef : Encode::resolve_alias($fe);
+			if ($re) {
+				push @ENCODINGS, $re unless grep {$re eq $_} @ENCODINGS;
+				push @out, "file(1) thinks it is ".pp($fe).", added to list of tests" unless $opts{'extra-quiet'};
+			}
+			else
+				{ push @out, "file(1) thinks it is ".pp($fe).", but that's not known by Encode" unless $opts{'extra-quiet'} }
+		}
+		else
+			{ warn "Warning: Ignoring unexpected file(1) output for '$fn', ignoring" unless $opts{'extra-quiet'} }
+	}
+	my $file_output;
+	if ($opts{'full-file'} && $fn ne '-') {
+		$file_output = file1('--brief', $fn);
+		$reset_stdout=1;
+		if ($file_output!~/\A[\x20-\x7E]+\z/aa) {
+			undef $file_output;
+			warn "Warning: Ignoring unexpected file(1) output for '$fn', ignoring" unless $opts{'extra-quiet'}
+		}
+	}
+	"open"->import(qw/:std :utf8/) if $reset_stdout && $STDOUT_UTF8;
+	
+	push @out, "Testing: ".encout(@ENCODINGS) if $opts{verbose};
+	
+	my ($okcnt,$char_rejects)=(0,0);
+	my $valid_utf8strict;
+	my ($is_plain,$is_utf_8);
+	ENCODING: for my $enc (@ENCODINGS) {
+		# if we've already checked that it's valid utf-8-strict, don't need to check utf8
+		next ENCODING if $valid_utf8strict && $enc=~/^utf8$/i;
+		
+		my $decoded;
+		my $ok = eval { local $SIG{__WARN__} = sub { die @_ };
+			$decoded = decode($enc, $data, Encode::FB_CROAK | Encode::LEAVE_SRC ); 1 };
+		if (!$ok) {
+			chomp( my $e = $@ );
+			$e ||= "unknown error";
+			push @out, "Rejected ".encout($enc)." because it did not decode properly: $e" if $opts{'extra-verbose'};
+			next ENCODING;
+		} # else, $ok is true
+		for my $ao (@all_of) {
+			if (ref $ao) { $decoded=~$ao or $ok=0 }
+			else { index($decoded,$ao)>=0 or $ok=0 }
+		}
+		if (!$ok) {
+			push @out, "Rejected ".encout($enc)." because not all of --all-of were found" if $opts{'extra-verbose'};
+			$char_rejects++; next ENCODING }
+		if ( defined($one_of) && $decoded!~$one_of ) {
+			push @out, "Rejected ".encout($enc)." because none of --one-of were found" if $opts{'extra-verbose'};
+			$char_rejects++; next ENCODING }
+		if ( defined($none_of) && $decoded=~$none_of ) {
+			push @out, "Rejected ".encout($enc)." because some of --none-of were found" if $opts{'extra-verbose'};
+			$char_rejects++; next ENCODING }
+		
+		# checks are done, this encoding is valid
+		$okcnt++;
+		$valid_utf8strict = 1 if $enc=~/^utf-8-strict$/i;
+		
+		my $cr   = () = $decoded=~/\N{U+0D}(?!\N{U+0A})/g;
+		my $lf   = () = $decoded=~/(?<!\N{U+0D})\N{U+0A}/g;
+		my $crlf = () = $decoded=~/\N{U+0D}\N{U+0A}/g;
+		my $nul  = () = $decoded=~/\N{U+00}/g;
+		my $ctrl = () = $decoded=~/\p{IsControlCustom}/g; # user-defined property (below)
+		
+		# Possible To-Do for later: Instead of --ignore-plain and --ignore-utf-8, I could generalize
+		# and make an --ignore/-i option, such as --ignore=ASCII,UTF-8,:LF ...
+		$is_plain = 1 if $enc=~/^ascii$/i && !$nul && !$ctrl
+			&& !$cr && !( $lf && $crlf );
+		$is_utf_8 = 1 if $enc=~/^utf-8-strict$/i && !$nul && !$ctrl
+			&& !$cr && !( $lf && $crlf );
+		
+		my $mixed_crlf = ($crlf && ($cr || $lf)) || ($cr && $lf);
+		push @out, "Valid ".encout($enc).", "
+			.($mixed_crlf?'MIXED: ':'')
+			.( join(', ',
+				$cr   ? ( $opts{verbose} || $mixed_crlf ? "$cr CRs"     : 'CR'   ) : (),
+				$lf   ? ( $opts{verbose} || $mixed_crlf ? "$lf LFs"     : 'LF'   ) : (),
+				$crlf ? ( $opts{verbose} || $mixed_crlf ? "$crlf CRLFs" : 'CRLF' ) : (),
+			) || 'no CR or LF' )
+			.( $ctrl || $nul ? "; ".join(', ',
+					$nul  ? "$nul NULs" : (),
+					$ctrl ? "$ctrl Ctrls (not NUL/CR/LF/Tab)" : (),
+				) : '' )
+			.( defined($file_output) ? "; file(1): $file_output" : '' );
+		my @o2;
+		push @o2, pp($decoded) if $opts{dump};
+		push @o2, "---8<---\n".$decoded.(substr($decoded,-1) ne "\n"?"\n":'')
+			."--->8---" if $opts{'dump-raw'};
+		if ($opts{'list-chars'}) {
+			pos($decoded) = undef;
+			while ($decoded=~/(\P{IsPlainASCII})/g) { # user-defined property (below)
+				my $c = $1;
+				push @o2, "pos ".pos($decoded).": ".sprintf("U+%02X",ord($c))." "
+					.(charnames::viacode(ord $c)||'(unnamed)')
+					.( $STDOUT_UTF8 ? " (\"".$c."\")" : "(".pp($c).")" );
+			}
+		}
+		push @out, \@o2 if @o2;
+		
+		last ENCODING unless $opts{'test-all'};
+	}
+	
+	if ($okcnt<1) {
+		$badfiles++;
+		push @out, "INVALID ".encout(@ENCODINGS);
+		push @out, "$char_rejects of ".@ENCODINGS." encodings were rejected due to --(one|all|none)-of"
+			if $opts{verbose} && ( @all_of || defined($one_of) || defined($none_of) );
+	}
+	
+	die "no output?" unless @out;
+	if ( grep({!ref} @out)==1 && !ref($out[0]) ) {
+		unless ( @out==1 && ( $opts{'ignore-plain'} && $is_plain || $opts{'ignore-utf-8'} && $is_utf_8 ) ) {
+			say $fn,": ", shift @out;
+			for my $o (@out) { say+(/\A---8<---\n/?():$I),$_ for @$o }
+		}
+	}
+	else {
+		say $fn,":";
+		for my $o (@out) {
+			if (ref $o) { say+(/\A---8<---\n/?():($I,$I)),$_ for @$o }
+			else { say $I,$o }
+		}
+	}
+	
+	return $okcnt;
+}
+
+if ($opts{'extra-verbose'}) {
+	say "Of ".@ARGV, " files, $badfiles had errors, and $skipcount were skipped";
+}
+
+exit $badfiles;
+
+sub parse_chars {
+	die "bad number of args to parse_chars" unless @_==1;
+	my $str = shift;
+	## no critic (ProhibitComplexRegexes)
+	state $regex = qr{  # more or less a tokenizer
+		  \\ ([\\\-\^]) (?{ $^N })
+		| ([^\\\^\-]) (?{ $^N })
+		| \\x ([0-9a-fA-F]{2}) (?{ chr hex $^N })
+		| \\x \{ ([0-9a-fA-F]{2,8}) \} (?{ chr hex $^N })
+		| \\N \{ (?:
+				  U\+ ([0-9a-fA-F]{2,8}) (?{ chr hex $^N })
+				| ([A-Z0-9 \-]+) (?{ charnames::string_vianame($^N) })
+			) \}
+		| ( \\[pP]\{ [A-Za-z0-9_\-=:*\h\.]+ \} ) (?{ qr{$^N} })
+		| \- (?{ [] }) # special marker for processing of ranges below
+	}msx;
+	## use critic
+	my @out;
+	pos($str)=undef;
+	$^R=undef;  ## no critic (RequireLocalizedPunctuationVars)
+	while ( $str =~ m/\G$regex/gcp ) {
+		die "failed to parse ".pp(${^MATCH}) unless defined($^R);
+		push @out, $^R;
+		$^R=undef;  ## no critic (RequireLocalizedPunctuationVars)
+	}
+	die "failed to parse ".pp(substr($str,pos($str)//0))
+		unless defined(pos($str)) && pos($str)==length($str);
+	# now process ranges
+	for ( my $i=0; $i<@out; $i++ ) {
+		if (ref $out[$i] eq 'ARRAY') {
+			die "bad range start point ".pp($out[$i-1])."\n" if $i<1 || ref($out[$i-1]);
+			die "bad range end point ".pp($out[$i+1])."\n" if $i>=$#out || ref($out[$i+1]);
+			my $code = "qr{[\Q$out[$i-1]\E-\Q$out[$i+1]\E]}";
+			my $qr = eval $code  ## no critic (ProhibitStringyEval)
+				or die "failed to build range: ".($@||"unknown error");
+			splice @out, $i-1, 3, $qr;
+			redo;
+		}
+		elsif (ref $out[$i] && ref $out[$i] ne 'Regexp')
+			{ die "Internal error: unexpected ref ".ref($out[$i]) }
+	}
+	return @out;
+}
+
+sub encout {  ## no critic (RequireArgUnpacking)
+	# change the formatting of some encoding names to look nicer
+	my @encs;
+	for (@_) {
+		if (/^utf-8-strict$/i) { push @encs, "UTF-8" } # "utf8" is the "lax" one
+		elsif (/^ascii|^cp\d+$|^iso-|^utf[^a-z8]|^koi[^a-z]/i) { push @encs, uc }
+		else { push @encs, $_ }
+	}
+	return wantarray ? @encs : join ", ", @encs;
+}
+
+sub pp {
+	die "bad number of args to pp" unless @_==1;
+	return Data::Dumper->new([shift])->Terse(1)->Purity(1)->Useqq(1)
+		->Quotekeys(0)->Sortkeys(1)->Indent(0)->Pair('=>')->Dump;
+}
+
+# http://perldoc.perl.org/perlunicode.html#User-Defined-Character-Properties
+sub IsPlainASCII () {
+	return "0009\n000A\n000D\n0020\t007E\n" }
+sub IsUncommonControl () {
+	return "+utf8::Control\n-0009\n-000A\n-000D\n" }
+sub IsControlCustom () {
+	return "+utf8::Control\n-0009\n-000A\n-000D\n-0000\n" }
+
+__END__
+
+=head1 DESCRIPTION
+
+This documentation describes version C<0.03-beta>.
+
+=head2 Notes
+
+If you specify a filename of C<->, C<STDIN> is read. To specify a real
+file named F<->, use an argument of e.g. C<./-> or an absolute filename.
+
+Some encoding names/aliases:
+C<utf8> = Perl's utf8, C<UTF-8> = utf-8-strict,
+C<Latin1> = ISO-8859-1,
+C<cp1252> = Windows-1252 = sometimes "ANSI" (superset of Latin1),
+C<Latin9> = ISO-8859-15.
+Note that CP1252 is often mislabeled as Latin1 (or Latin9)
+and there are many similarities
+(L<http://en.wikipedia.org/wiki/Windows-1252>).
+See also L<Encode/UTF-8 vs. utf8 vs. UTF8>.
+
+If a file is successfully decoded as C<utf-8-strict> (aka C<UTF-8>),
+testing the C<utf8> encoding is skipped.
+
+=head2 Options
+
+These are B<additional> docs on individual options. For the
+list of all options, see L</SYNOPSIS>.
+
+=head3 C<--encodings> or C<-e>
+
+A comma-separated list of encoding names which this tool should try
+to decode the file(s) as. Use C<--list-encodings> to get a list of
+supported encodings.
+
+As an alternative or to specify defaults, you may specify a list of
+encodings in the environment variable C<ENCTOOL_ENCODINGS>.
+The command-line options override this default.
+
+=head3 C<--all-encodings> or C<-E>
+
+Tells this tool to try I<all> supported encodings. Cannot be used with
+C<--encodings>. This option is probably most useful with C<--one-of>,
+C<--all-of>, and/or C<--none-of>. Note that if there are many files and/or
+large files this option will probably be quite slow.
+
+=head3 C<--test-all> or C<-a>
+
+Enabling this option causes I<all> encodings on the list
+(C<--encodings> or C<--all-encodings>) to be tested.
+
+When this option is not specified, this tool will stop searching and
+report the first encoding for which the file decodes without errors and,
+if they were specified, passes the C<--one-of>, C<--all-of>,
+and C<--none-of> checks.
+
+=head3 C<--one-of> or C<-k>, C<--all-of> or C<-K>, and C<--none-of> or C<-n>
+
+Each of these options specifies a set of characters. If you specify
+C<--one-of>, then at least one of the specified characters must be
+present in the decoded text for the decoding to be considered
+successful. C<--all-of> is similar, except that all of the specified
+characters must be present, and C<--none-of> checks that none of the
+specified characters are present. If multiple options are supplied, all
+conditions are applied.
+
+The strings support several special sequences:
+
+=over
+
+=item *
+
+C<\xHH>, C<\x{HHHH}>, or C<\N{U+HHHH}>, where I<C<HH>> is a hex code,
+represents the character with that code point.
+Note that in C<\xHH>, the hex code must be exactly two characters.
+
+=item *
+
+C<\N{CHARNAME}> represents the character with that name.
+Only strict full names are supported, not short names or aliases
+(see C<:full> in L<charnames|charnames>).
+
+=item *
+
+Ranges may be specified with a dash (C<->) between two characters.
+
+=item *
+
+Use C<\p{...}> to match a named Unicode property, or C<\P{...}> for
+the inverse. See L<perluniprops>. Cannot be used in ranges.
+
+=item *
+
+Backslashes (C<\>), dashes (C<->), and carets (C<^>) must be escaped
+with a backslash, i.e. C<\\>, C<\->, or C<\^> (the latter currently
+only for possible forwards compatibility). No other characters in the
+string should be escaped with backslashes.
+
+=back
+
+=head3 C<--no-control> or C<-N>
+
+This is essentially the equivalent of C<--none-of> with the set of
+Unicode characters whose I<General Category> is I<Control>,
+except for the very common characters C<CR>, C<LF>, and C<TAB>.
+
+=head3 C<--binary> or C<-b>
+
+Normally, files that Perl's C<-B> heuristic reports as being binary are
+skipped. Enabling this option tests those files too.
+
+If one or more of the C<--encodings> is C<UTF-16> or C<UTF-32>, the
+heuristic check is disabled, because such files are commonly misdetected
+as binary files.
+
+=head3 C<--size-limit> or C<-s>
+
+Because the entire file has to be loaded into memory, there is a default
+limit of approx. 10MB for files. You can change this limit by specifying
+this option (size in bytes), or you can specify zero (C<0>) to disable
+the limit.
+
+=head3 C<--encode-guess> or C<-g>
+
+L<Encode::Guess|Encode::Guess> will be asked for its opinion on what encoding
+the file might be, based on the list of encodings you specify. If it comes
+up with a single answer, that encoding will be added to the list of encodings
+to test. See also L<Encode::Guess/CAVEATS>.
+
+=head3 C<--use-file> or C<-f>
+
+The L<file(1)> tool is run, and if the encoding that it returns is supported
+by L<Encode|Encode>, then that encoding is added to the list of encodings to
+test. This option not used when the input comes from C<STDIN>.
+
+=head3 C<--quiet> or C<-q>, C<--extra-quiet> or C<-Q>, C<--verbose> or C<-v>, and C<--extra-verbose> or C<-V>
+
+The "quiet" and "verbose" options do not interact: specifying both will
+disable some messages while enabling others. C<--extra-quiet> does enable
+C<--quiet> though, and C<--extra-verbose> enables C<--verbose>.
+
+=head1 AUTHOR, COPYRIGHT, AND LICENSE
+
+Copyright (c) 2018 Hauke Daempfling (haukex@zero-g.net)
+at the Leibniz Institute of Freshwater Ecology and Inland Fisheries (IGB),
+Berlin, Germany, L<http://www.igb-berlin.de/>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but B<WITHOUT ANY WARRANTY>; without even the implied warranty of
+B<MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE>. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see L<http://www.gnu.org/licenses/>.
+
+=cut
