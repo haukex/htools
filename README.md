@@ -12,6 +12,14 @@ A collection of various software tools and scripts.
 	
 	Rewrite symbolic links with Perl.
 	
+*	**`enctool`**
+	
+	Encoding Tool: Verify (or guess) the encodings of files.
+	
+*	**`smartunpack`**
+	
+	Unpack files, always creating a toplevel directory (using heuristics).
+	
 *	**`htmlrescache`**
 	
 	HTML Resource Cacher implemented as a git filter.
