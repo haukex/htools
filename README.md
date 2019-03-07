@@ -28,6 +28,10 @@ A collection of various software tools and scripts.
 	
 	Dump TCP streams from `.pcap` files using `tshark`, in ASCII or binary.
 	
+*	**`zip2pl`**
+	
+	Convert `zip` files to Perl scripts (e.g. for `git` filters).
+	
 *	**`t/*.t`**
 	
 	Test scripts for the tools. Run the commands `prove` or `prove -v`
