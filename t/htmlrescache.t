@@ -30,6 +30,8 @@ along with this program. If not, see L<http://www.gnu.org/licenses/>.
 
 my $DEBUG = 0; # enable htmlrescache debug output
 
+#TODO Later: skip this test if no internet connection?
+
 use FindBin;
 use Path::Class qw/file dir/;
 
