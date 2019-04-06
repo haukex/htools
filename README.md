@@ -20,6 +20,10 @@ A collection of various software tools and scripts.
 	
 	Unpack files, always creating a toplevel directory (using heuristics).
 	
+*	**`gapanalysis`**
+	
+	Efficiently analyze a sequence of integers (in any order) for gaps in the sequence.
+	
 *	**`htmlrescache`**
 	
 	HTML Resource Cacher implemented as a git filter.

@@ -1,0 +1,120 @@
+#!/usr/bin/env perl
+use warnings;
+use 5.018;
+use Getopt::Long qw/ HelpMessage :config posix_default gnu_compat
+	bundling auto_version auto_help /;
+use POSIX qw/ceil/;
+use Set::IntSpan;
+use Scalar::Util qw/looks_like_number/;
+use Data::Dump qw/pp/;
+use Time::Piece;
+
+# SEE THE END OF THIS FILE FOR AUTHOR, COPYRIGHT AND LICENSE INFORMATION
+
+=head1 SYNOPSIS
+
+Efficiently analyze a sequence of integers (in any order) for gaps in the sequence.
+
+ gapanalysis [OPTIONS] [FILE(s)]
+ OPTIONS:
+   -g | --gap GAPSPEC  - Gaps of this size or larger are detected
+   -f | --field FIELD  - Which field in the input (starts at 1)
+   -F | --fieldsep PAT - The pattern on which to split fields
+   -h | --holes        - Show holes (gaps) in addition to spans
+   -H | --only-holes   - Show holes (gaps) instead of spans
+   -t | --time         - Show UNIX timestamps as strings
+   -v | --verbose      - Be verbose
+
+C<GAPSPEC> can include C<d>, C<h>, and C<m> multipliers, e.g. C<3d5h>
+(C<1d> = 86400 seconds). C<PAT> is passed to Perl's C<split> as-is.
+
+=cut
+
+our $VERSION = '0.01';
+
+GetOptions(
+	'gap|g=s'      => \( my $GAPSPEC='1' ),
+	'field|f=i'    => \( my $FIELDNUM ),
+	'fieldsep|F=s' => \( my $FIELDSEP=' ' ),
+	'holes|h'      => \( my $HOLES ),
+	'only-holes|H' => \( my $ONLYHOLES ),
+	'time|t'       => \( my $ISTIME ),
+	'verbose|v'    => \( my $VERBOSE ),
+	) or HelpMessage(-exitval=>255);
+HelpMessage(-msg=>'Can\'t use -h and -H together',-exitval=>255)
+	if $HOLES && $ONLYHOLES;
+
+pos($GAPSPEC)=undef;
+my $GAP=0;
+while ( $GAPSPEC=~/\G\s*(\d+(?:\.\d+)?)\s*([dhms]?)\s*/gc ) {
+	my ($g,$m) = ($1,$2);
+	   if ($m eq 'd') { $GAP += $g*60*60*24 }
+	elsif ($m eq 'h') { $GAP += $g*60*60 }
+	elsif ($m eq 'm') { $GAP += $g*60 }
+	else              { $GAP += $g }
+}
+die "Failed to parse gapspec at: "
+	.pp(''.substr($GAPSPEC,pos($GAPSPEC)//0))."\n"
+		unless pos($GAPSPEC) && pos($GAPSPEC)==length($GAPSPEC);
+$GAP = int($GAP);
+die "Bad gap value $GAP\n" unless $GAP>0;
+
+my $PAD = ceil( ($GAP-2)/2 );
+say STDERR "# Gap: $GAP, Pad: $PAD" if $VERBOSE;
+
+my $set = Set::IntSpan->new;
+while (<>) {
+	chomp;
+	my $v = $FIELDNUM ? (split $FIELDSEP)[$FIELDNUM-1] : $_;
+	if ( !looks_like_number($v) ) {
+		warn "ignoring non-numeric record: ".pp($v)." at $ARGV line $.\n";
+		next }
+	# adding the padding now saves memory in the set!
+	$set->U( [[ int($v)-$PAD, int($v)+$PAD ]] );
+}
+$set = $set->inset($PAD); # remove padding
+if ( $GAP%2==0 ) { # even-sized gaps take a bit of special treatment
+	for my $h ($set->holes->spans) {
+		$set->U([$h]) if $$h[1]-$$h[0]+1 < $GAP;
+	}
+}
+
+my $fmt = $ISTIME ? sub { gmtime(shift)->datetime } : sub { shift };
+if ($ONLYHOLES) {
+	say $fmt->($$_[0]),"\t",$fmt->($$_[1]) for $set->holes->spans;
+}
+elsif ($HOLES) {
+	my $prev_end;
+	for my $span ($set->spans) {
+		say "Hole\t",$fmt->($prev_end+1),"\t",$fmt->($$span[0]-1) if defined($prev_end);
+		say "Span\t",$fmt->($$span[0]),  "\t",$fmt->($$span[1]);
+		$prev_end = $$span[1];
+	}
+}
+else {
+	say $fmt->($$_[0]),"\t",$fmt->($$_[1]) for $set->spans;
+}
+
+
+__END__
+
+=head1 Author, Copyright, and License
+
+Copyright (c) 2019 Hauke Daempfling (haukex@zero-g.net)
+at the Leibniz Institute of Freshwater Ecology and Inland Fisheries (IGB),
+Berlin, Germany, L<http://www.igb-berlin.de/>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see L<http://www.gnu.org/licenses/>.
+
+=cut
