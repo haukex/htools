@@ -8,6 +8,7 @@ use Set::IntSpan;
 use Scalar::Util qw/looks_like_number/;
 use Data::Dump qw/pp/;
 use Time::Piece;
+$|++;
 
 # SEE THE END OF THIS FILE FOR AUTHOR, COPYRIGHT AND LICENSE INFORMATION
 
@@ -23,7 +24,8 @@ Efficiently analyze a sequence of integers (in any order) for gaps in the sequen
    -h | --holes        - Show holes (gaps) in addition to spans
    -H | --only-holes   - Show holes (gaps) instead of spans
    -t | --time         - Show UNIX timestamps as strings
-   -v | --verbose      - Be verbose
+   -q | --quiet        - Be quieter (suppress some warnings)
+   -d | --debug        - Debug output
 
 C<GAPSPEC> can include C<d>, C<h>, and C<m> multipliers, e.g. C<3d5h>
 (C<1d> = 86400 seconds). C<PAT> is passed to Perl's C<split> as-is.
@@ -39,7 +41,8 @@ GetOptions(
 	'holes|h'      => \( my $HOLES ),
 	'only-holes|H' => \( my $ONLYHOLES ),
 	'time|t'       => \( my $ISTIME ),
-	'verbose|v'    => \( my $VERBOSE ),
+	'quiet|q'      => \( my $QUIET ),
+	'debug|d'      => \( my $DEBUG ),
 	) or HelpMessage(-exitval=>255);
 HelpMessage(-msg=>'Can\'t use -h and -H together',-exitval=>255)
 	if $HOLES && $ONLYHOLES;
@@ -60,14 +63,14 @@ $GAP = int($GAP);
 die "Bad gap value $GAP\n" unless $GAP>0;
 
 my $PAD = ceil( ($GAP-2)/2 );
-say STDERR "# Gap: $GAP, Pad: $PAD" if $VERBOSE;
+say STDERR "# Gap: $GAP, Pad: $PAD" if $DEBUG;
 
 my $set = Set::IntSpan->new;
 while (<>) {
 	chomp;
 	my $v = $FIELDNUM ? (split $FIELDSEP)[$FIELDNUM-1] : $_;
 	if ( !looks_like_number($v) ) {
-		warn "ignoring non-numeric record: ".pp($v)." at $ARGV line $.\n";
+		warn "ignoring non-numeric record: ".pp($v)." at $ARGV line $.\n" unless $QUIET;
 		next }
 	# adding the padding now saves memory in the set!
 	$set->U( [[ int($v)-$PAD, int($v)+$PAD ]] );
