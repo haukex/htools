@@ -36,6 +36,7 @@ use IPC::Run3::Shell qw/:FATAL :run/;
 
 use Archive::Zip qw/AZ_OK/;
 use Archive::Tar; # handles gzip and bzip2
+use File::Copy qw/move/;
 
 my $uut = Path::Class::Dir->new($FindBin::Bin)->parent
 	->file('smartunpack')->stringify;
@@ -43,6 +44,7 @@ my $uut = Path::Class::Dir->new($FindBin::Bin)->parent
 my $tempdir = Path::Class::tempdir(TMPDIR=>1,
 	TEMPLATE=>'smartunpack_tests_XXXXXXXXXX',CLEANUP=>1);
 
+my $_cur_targ; # ugly global var hack
 sub dotest {
 	my ($arcf,$exp,$args) = @_;
 	$args ||= [];
@@ -51,13 +53,14 @@ sub dotest {
 	#TODO Later: The following doesn't check STDOUT
 	if (grep {$_ eq '--recursive' || $_ eq '-r'} @$args) { # meh
 		$targ = $arcf;
-		run $^X, $uut, $VERBOSE?'-v':'-q', @$args, $arcf, {fail_on_stderr=>1};
+		run $^X, $uut, $VERBOSE?'-v':'-q', @$args, $arcf, {show_cmd=>$VERBOSE,fail_on_stderr=>1};
 	}
 	else {
 		$targ = Path::Class::tempdir(DIR=>$tempdir,
 			TEMPLATE=>'su_test_target_XXXXXXXXXX',CLEANUP=>1);
-		run $^X, $uut, $VERBOSE?'-v':'-q', @$args, $arcf, $targ, {fail_on_stderr=>1};
+		run $^X, $uut, $VERBOSE?'-v':'-q', @$args, $arcf, $targ, {show_cmd=>$VERBOSE,fail_on_stderr=>1};
 	}
+	$_cur_targ = $targ;
 	my @got;
 	$targ->recurse( callback => sub {
 			my $found = shift;
@@ -209,6 +212,35 @@ sub dotest {
 		two/eight/ten/eleven.txt two/eight/ten/twelve.txt };
 	
 	dotest($recur,\@exp,['--recursive']);
+}
+
+{
+	my $f = $tempdir->file('verifyme.zip');
+	my $zip = Archive::Zip->new();
+	$zip->addString('Foo!', 'verifyme/foo.txt');
+	$zip->addString(join("\n", 1..10), 'verifyme/bar.txt');
+	$zip->addString('Quz!', 'verifyme/quz.txt');
+	$zip->writeToFileNamed("$f")==AZ_OK or die "zip error";
+	my @exp = qw{ verifyme/ verifyme/foo.txt verifyme/bar.txt verifyme/quz.txt };
+	dotest($f,\@exp);
+	my $targ = $_cur_targ->subdir('verifyme');
+	
+	run $^X, $uut, '--verify', $VERBOSE?'-v':'-q', $f, $targ, {show_cmd=>$VERBOSE,fail_on_stderr=>1};
+	is $?, 0, '--verify ok';
+	
+	# if the archive is in the target dir, it should be ignored
+	my $f2 = $targ->file($f->basename);
+	move("$f","$f2") or die "mv $f $f2: $!";
+	run $^X, $uut, '--verify', $VERBOSE?'-v':'-q', $f2, $targ, {show_cmd=>$VERBOSE,fail_on_stderr=>1};
+	is $?, 0, '--verify ok (same dir)';
+	
+	$targ->file('bar.txt')->spew(join("\n", 1..5,"X",6..10));
+	$targ->file('quz.txt')->remove;
+	chmod 0500, $targ->parent or warn "chmod ".$targ->parent.": $!\n";
+	note "Expect some diff output here:";
+	run $^X, $uut, '-c', $VERBOSE?'-v':'-q', $f2, $targ,
+		{allow_exit=>[0,1], show_cmd=>$VERBOSE, fail_on_stderr=>1};
+	is $?, 256, '--verify fails ok';
 }
 
 done_testing;

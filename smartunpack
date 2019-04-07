@@ -14,6 +14,7 @@ use String::LCSS qw/lcss/;
 
  smartunpack [OPTIONS] ARCHIVE [TARGETDIR]
  smartunpack [OPTIONS] --recursive|-r [DIR]
+ smartunpack [OPTIONS] --verify|-c ARCHIVE TARGETDIR
  Options:
    -q | --quiet    - Be quiet
    -v | --verbose  - Be verbose
@@ -30,10 +31,14 @@ either the toplevel directory contained within the archive, or the
 name of the archive file. Currently, the longer directory name
 wins, but this heuristic may be improved upon in the future.
 
-When used in C<--recursive> mode, it will search for and unpack
+When used in B<C<--recursive> mode>, it will search for and unpack
 any supported archives below the specified directory, and will
 repeat its search after every unpack to take care of any archives
 contained within archives.
+
+When used in B<C<--verify> mode>, it will unpack the archive to a
+temporary location, and then run an external recursive C<diff> on
+the newly unpacked archive and the specified target directory.
 
 In general this tool will refuse to overwrite any files,
 I<however>, it is assumed that the archives themselves are
@@ -68,17 +73,18 @@ along with this program. If not, see L<http://www.gnu.org/licenses/>.
 
 =cut
 
-our $VERSION = '0.01-beta';
+our $VERSION = '0.03-beta';
 
 # All the known archive types from Archive::Extract 0.80 plus .7z
 my $EXT_RE = qr/\.(?: 7z|tar\.gz|tgz|gz|zip|jar|ear|war|par|tbz2?
 	|tar\.bz2?|bz2|txz|tar\.xz|xz|tar|(?-i:Z)|(?-i:lzma) )\z/xi;
 
 my %opts = ( version => sub { print "smartunpack v$VERSION\n"; exit } );
-GetOptions(\%opts, 'version', 'recursive|r', 'quiet|q', 'verbose|v')
+GetOptions(\%opts, 'version', 'recursive|r', 'verify|c', 'quiet|q', 'verbose|v')
 	or HelpMessage(-exitval=>255);
 
 if ($opts{recursive}) {
+	HelpMessage(-msg=>'Can\'t use --verify and --recursive together',-exitval=>255) if $opts{verify};
 	HelpMessage(-msg=>'Too many arguments',-exitval=>255) if @ARGV>1;
 	my $dir;
 	if (@ARGV) {
@@ -94,6 +100,13 @@ if ($opts{recursive}) {
 			$visited{$arc}++;
 		}
 	}
+}
+elsif ($opts{verify}) {
+	HelpMessage(-msg=>'Not enough arguments',-exitval=>255) if @ARGV<2;
+	HelpMessage(-msg=>'Too many arguments',-exitval=>255) if @ARGV>2;
+	my $arc = file(shift @ARGV);
+	my $targ = dir(shift @ARGV);
+	exit( verify_unpack( $arc, $targ ) ? 0 : 1 );
 }
 else {
 	HelpMessage(-msg=>'Not enough arguments',-exitval=>255) if @ARGV<1;
@@ -161,4 +174,36 @@ sub smart_unpack {
 		move("$src","$dest") or die "failed to move $src to $dest: $!";
 	}
 	print "Unpacked into $moveto\n" unless $opts{quiet};
+	return $moveto;
 }
+
+sub verify_unpack {
+	my ($archive,$target) = @_;
+	die "File not found or not a readable file: $archive"
+		unless length($archive) && -r -f $archive;
+	die "Target not found or not a directory: $target"
+		unless length($target) && -d $target;
+	
+	my $tmpdir;
+	if (-d -w $target->parent) {
+		$tmpdir = Path::Class::tempdir(CLEANUP=>1, DIR=>$target->parent,
+			TEMPLATE=>'.'.clean_fragment($archive->basename).'_XXXXXXXXXX');
+		print "Working in $tmpdir\n" unless $opts{quiet};
+	}
+	else {
+		$tmpdir = Path::Class::tempdir(CLEANUP=>1, tmpdir=>1,
+			TEMPLATE=>'.'.clean_fragment($archive->basename).'_XXXXXXXXXX');
+		print "Can't write to ".$target->parent.", working in $tmpdir\n" unless $opts{quiet};
+	}
+	
+	# do the unpacking
+	my $dest = smart_unpack( $archive, $tmpdir );
+	
+	# do the diff
+	my @args = ('--recursive');
+	push @args, $opts{verbose} ? '--unified' : '--brief';
+	push @args, '--exclude='.$archive->basename if $target->subsumes($archive);
+	system('diff',@args,$dest,$target);
+	return $?==0;
+}
+
