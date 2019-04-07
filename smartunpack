@@ -203,7 +203,9 @@ sub verify_unpack {
 	my @args = ('--recursive');
 	push @args, $opts{verbose} ? '--unified' : '--brief';
 	push @args, '--exclude='.$archive->basename if $target->subsumes($archive);
+	print "\$ diff @args $dest $target\n" if $opts{verbose};
 	system('diff',@args,$dest,$target);
+	print "diff exited with 0\n" if !$opts{quiet} && $?==0;
 	return $?==0;
 }
 
