@@ -14,7 +14,7 @@ use String::LCSS qw/lcss/;
 
  smartunpack [OPTIONS] ARCHIVE [TARGETDIR]
  smartunpack [OPTIONS] --recursive|-r [DIR]
- smartunpack [OPTIONS] --verify|-c ARCHIVE TARGETDIR
+ smartunpack [OPTIONS] --verify|-c [ARCHIVE] [TARGETDIR]
  Options:
    -q | --quiet    - Be quiet
    -v | --verbose  - Be verbose
@@ -37,8 +37,12 @@ repeat its search after every unpack to take care of any archives
 contained within archives.
 
 When used in B<C<--verify> mode>, it will unpack the archive to a
-temporary location, and then run an external recursive C<diff> on
-the newly unpacked archive and the specified target directory.
+temporary location, and then run an external recursive C<diff> on the
+newly unpacked archive and the specified target directory. Omitting
+the directory name uses the current directory. The name of the
+archive may be omitted if and only if it can be clearly determined
+from the name of the directory. Omitting both causes the current
+directory to be checked for whether it contains exactly one archive.
 
 In general this tool will refuse to overwrite any files,
 I<however>, it is assumed that the archives themselves are
@@ -102,10 +106,38 @@ if ($opts{recursive}) {
 	}
 }
 elsif ($opts{verify}) {
-	HelpMessage(-msg=>'Not enough arguments',-exitval=>255) if @ARGV<2;
-	HelpMessage(-msg=>'Too many arguments',-exitval=>255) if @ARGV>2;
-	my $arc = file(shift @ARGV);
-	my $targ = dir(shift @ARGV);
+	my ($arc,$targ);
+	#TODO: Tests for --verify with less than 2 arguments
+	if (@ARGV==0) {
+		$targ = dir()->absolute;
+		my @arcs = grep {-f && $_->basename=~$EXT_RE} $targ->children;
+		die "Sorry, there isn't exactly one archive in this directory (found ".@arcs.")\n"
+			unless @arcs==1;
+		$arc = $arcs[0];
+	}
+	elsif (@ARGV==1) {
+		if (-f $ARGV[0]) {
+			$arc = file(shift @ARGV);
+			$targ = dir()->absolute;
+		}
+		elsif (-d $ARGV[0]) {
+			$targ = dir(shift @ARGV)->absolute;
+			my $re = qr/\A\Q${\$targ->basename}\E$EXT_RE\z/;
+			my @arcs = grep {$_->basename=~$re} map {file($_)}
+				keys %{{ map {($_->absolute->stringify=>1)} grep {-f}
+					$targ->parent->children, $targ->children, dir()->children }};
+			die "Sorry, didn't find exactly one archive matching the name "
+				.$targ->basename." (found ".@arcs.")\n"
+					unless @arcs==1;
+			$arc = $arcs[0];
+		}
+		else { die "Not a file or a directory: $ARGV[0]\n" }
+	}
+	elsif (@ARGV==2) {
+		$arc = file(shift @ARGV);
+		$targ = dir(shift @ARGV);
+	}
+	else { HelpMessage(-msg=>'Too many arguments',-exitval=>255) }
 	exit( verify_unpack( $arc, $targ ) ? 0 : 1 );
 }
 else {
