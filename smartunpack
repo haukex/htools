@@ -148,7 +148,7 @@ sub smart_unpack {
 		my $ext = $basename; # the name of the archive itself
 		my $longer = length($int) > length($ext) ? $int : $ext;
 		if ($int ne $ext) {
-			my $lcss = lcss($int,$ext);
+			my $lcss = lcss($int,$ext)//0;
 			my $shared = 100 * length($lcss) / length($longer);
 			if ( length($lcss)<5 || $shared<25 ) { #TODO: what's the best thing to do in this case?
 				# probably we should add several different "informational" messages in addition to this case,
@@ -165,7 +165,7 @@ sub smart_unpack {
 		$moveto = $target->subdir( $basename );
 	}
 	die "Target already exists: $moveto" if -e $moveto;
-	$moveto->mkpath(0); # dies on error
+	$moveto->mkpath($opts{verbose}?1:0); # dies on error
 	for my $src (@children) {
 		my $dest = $src->is_dir
 			? $moveto->subdir( $src->basename )
