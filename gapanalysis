@@ -24,6 +24,7 @@ Efficiently analyze a sequence of integers (in any order) for gaps in the sequen
    -h | --holes        - Show holes (gaps) in addition to spans
    -H | --only-holes   - Show holes (gaps) instead of spans
    -t | --time         - Show UNIX timestamps as strings
+   -o | --outfile FILE - output to this file instead of STDOUT
    -q | --quiet        - Be quieter (suppress some warnings)
    -d | --debug        - Debug output
 
@@ -41,6 +42,7 @@ GetOptions(
 	'holes|h'      => \( my $HOLES ),
 	'only-holes|H' => \( my $ONLYHOLES ),
 	'time|t'       => \( my $ISTIME ),
+	'outfile|o=s'  => \( my $OUTFILE ),
 	'quiet|q'      => \( my $QUIET ),
 	'debug|d'      => \( my $DEBUG ),
 	) or HelpMessage(-exitval=>255);
@@ -64,6 +66,11 @@ die "Bad gap value $GAP\n" unless $GAP>0;
 
 my $PAD = ceil( ($GAP-2)/2 );
 say STDERR "# Gap: $GAP, Pad: $PAD" if $DEBUG;
+
+if (defined $OUTFILE) {
+	open my $fh, '>', $OUTFILE or die "$OUTFILE: $!";
+	select($fh);
+}
 
 my $set = Set::IntSpan->new;
 while (<>) {
