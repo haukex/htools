@@ -223,7 +223,7 @@ sub verify_unpack {
 		print "Working in $tmpdir\n" unless $opts{quiet};
 	}
 	else {
-		$tmpdir = Path::Class::tempdir(CLEANUP=>1, tmpdir=>1,
+		$tmpdir = Path::Class::tempdir(CLEANUP=>1, TMPDIR=>1,
 			TEMPLATE=>'.'.clean_fragment($archive->basename).'_XXXXXXXXXX');
 		print "Can't write to ".$target->parent.", working in $tmpdir\n" unless $opts{quiet};
 	}
