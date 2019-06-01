@@ -20,6 +20,10 @@ A collection of various software tools and scripts.
 	
 	Unpack files, always creating a toplevel directory (using heuristics).
 	
+*	**`csvmerge`**
+	
+	Merge multiple CSV files, checking that they all have the same headers.
+	
 *	**`gapanalysis`**
 	
 	Efficiently analyze a sequence of integers (in any order) for gaps in the sequence.

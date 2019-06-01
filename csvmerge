@@ -1,0 +1,51 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use CSVMerge qw/csvmerge/;
+use Getopt::Long qw/ HelpMessage :config posix_default gnu_compat
+	bundling auto_help /;
+
+=head1 SYNOPSIS
+
+ csvmerge [OPTIONS] FILE(s)
+ OPTIONS:
+   -h | --headercnt N  - Number of header rows to compare (default: 1)
+   -o | --outfile FILE - Output to file instead of STDOUT
+   -a | --append       - Append to first file instead of outfile
+   -q | --quotechar C  - Text::CSV option quote_char
+   -s | --sepchar C    - Text::CSV option sep_char
+   -c | --checkcols    - Verify that each row has the same nr of cols
+   -n | --numcols N    - Like -c, but ignore headers and expect N cols
+   -f | --failsoft     - Failures on individual files only warns
+
+=head1 AUTHOR, COPYRIGHT, AND LICENSE
+
+Copyright (c) 2019 Hauke Daempfling (haukex@zero-g.net)
+at the Leibniz Institute of Freshwater Ecology and Inland Fisheries (IGB),
+Berlin, Germany, L<http://www.igb-berlin.de/>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but B<WITHOUT ANY WARRANTY>; without even the implied warranty of
+B<MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE>. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see L<http://www.gnu.org/licenses/>.
+
+=cut
+
+my %opts = ( version => sub { print "csvmerge v$CSVMerge::VERSION\n"; exit } );
+GetOptions(\%opts, 'version', 'headercnt|h=i', 'outfile|o=s', 'append|a',
+	'quotechar|q=s', 'sepchar|s=s', 'checkcols|c', 'failsoft|f', 'numcols|n=i' )
+	or HelpMessage(-exitval=>255);
+delete $opts{version};
+
+csvmerge( %opts, files=>\@ARGV );
+
