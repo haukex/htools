@@ -60,6 +60,7 @@ for my $m ($zip->members) {
 		my $endtag = 'END';
 		my $str;
 		if ($utf8ok) {
+			#TODO Later: Maybe a cmdline option to format XML files? (make OpenOffice files a tiny bit easier to diff)
 			# if needed, generate end tags until we find one that isn't part of the text
 			# not the most efficient code, but it should work for many cases
 			#TODO Later: better end tag generation?
