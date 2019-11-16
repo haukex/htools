@@ -158,7 +158,7 @@ sub process { ## no critic (ProhibitExcessComplexity)
 	my $data;
 	if ($fn eq '-') {
 		binmode STDIN;
-		$data = do { local $/=undef; <STDIN> };
+		$data = do { local $/=undef; <STDIN> };  ## no critic (ProhibitExplicitStdin)
 	}
 	else {
 		stat $fn or do { $badfiles++; warn "Error: stat '$fn' failed: $!"; return };

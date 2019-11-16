@@ -23,7 +23,7 @@ my $filename;
 if (!@ARGV || @ARGV==1 && $ARGV[0] eq '-') {
 	$filename = 'STDIN';
 	# readFromFileHandle requires seekable handle (don't close it!)
-	my $data = do { local $/=undef; binmode STDIN; <STDIN> };
+	my $data = do { local $/=undef; binmode STDIN; <STDIN> };  ## no critic (ProhibitExplicitStdin)
 	open my $fh, '+<', \$data or die $!;  ## no critic (RequireBriefOpen)
 	$zip->readFromFileHandle($fh) == AZ_OK or die 'zip read error';
 }
