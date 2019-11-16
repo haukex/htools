@@ -129,7 +129,7 @@ my $verbose = -t Test::More->builder->output;  ## no critic (ProhibitInteractive
 
 {
 	my $http = HTTP_Tiny_FileCache->new( cache_path=>$cachedir,
-		verbose => $verbose );
+		verbose => $verbose, log_requests => $verbose );
 	my ($url,$content) = ("$BASE/one",'MyWebServer/one');
 	{
 		my $r = $http->get($url);
@@ -170,7 +170,7 @@ my $verbose = -t Test::More->builder->output;  ## no critic (ProhibitInteractive
 
 {
 	my $http = HTTP_Tiny_FileCache->new( cache_path=>$cachedir,
-		urltransform => 'clean', verbose => $verbose );
+		urltransform => 'clean', verbose => $verbose, log_requests => $verbose );
 	my ($url,$content) = ("$BASE/two",'MyWebServer/two');
 	{
 		my $r = $http->get($url);
@@ -194,7 +194,7 @@ my $verbose = -t Test::More->builder->output;  ## no critic (ProhibitInteractive
 
 {
 	my $http = HTTP_Tiny_FileCache->new( cache_path=>$cachedir,
-		urltransform => 'urlfn', verbose => $verbose );
+		urltransform => 'urlfn', verbose => $verbose, log_requests => $verbose );
 	my ($url, $content ) = ("$BASE/3/a/foo",'MyWebServer/3/a/foo');
 	my ($url2,$content2) = ("$BASE/3/b/foo",'MyWebServer/3/b/foo');
 	{
@@ -220,7 +220,7 @@ my $verbose = -t Test::More->builder->output;  ## no critic (ProhibitInteractive
 	$http->flush;
 	my $http2 = HTTP_Tiny_FileCache->new( cache_path=>$cachedir,
 		urltransform => 'urlfn', nonfatal_collision=>1,
-		verbose => $verbose );
+		verbose => $verbose, log_requests => $verbose );
 	for (1..2) {
 		my $r;
 		my @w = warns { $r = $http2->get($url2) };

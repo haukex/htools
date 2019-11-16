@@ -17,6 +17,7 @@ use HTTP::Tiny ();
  my $http = HTTP_Tiny_FileCache->new(  # default options:
  	http_tiny          => HTTP::Tiny->new(),
  	http_tiny_opts     => {},  # don't use with http_tiny
+ 	log_requests       => 0,   # log only actual HTTP requests
  	cache_path         => '/tmp/HTTP_Tiny_FileCache',
  	default_mode       => CACHE_MIRROR,
  	urltransform       => 'sha256',
@@ -90,8 +91,8 @@ my %transforms = (
 	},
 );
 
-my %NEW_KNOWN_ARGS = map {$_=>1} qw/ http_tiny http_tiny_opts cache_path
-	default_mode urltransform nonfatal_collision verbose /;
+my %NEW_KNOWN_ARGS = map {$_=>1} qw/ http_tiny http_tiny_opts log_requests
+	cache_path default_mode urltransform nonfatal_collision verbose /;
 
 sub new {  ## no critic (ProhibitExcessComplexity)
 	my ($class,%args) = @_;
@@ -112,6 +113,7 @@ sub new {  ## no critic (ProhibitExcessComplexity)
 	}
 	my $self = {
 		http => $args{http_tiny}||HTTP::Tiny->new( %{$args{http_tiny_opts}||{}} ),
+		log_requests => $args{log_requests},
 		cache_path => defined($args{cache_path}) ? $args{cache_path} : $DEFAULT_CACHE_PATH,
 		default_mode => defined($args{default_mode}) ? $args{default_mode} : CACHE_MIRROR,
 		transform => $trans,
@@ -174,10 +176,12 @@ sub get {  ## no critic (ProhibitExcessComplexity)
 	}
 	my $resp;
 	if ( $mode==CACHE_NEVER ) {
+		print $url, ": " if $self->{log_requests};
 		$resp = $self->{http}->get($url);
 		confess "Unexpected key cachefile" if exists $resp->{cachefile};
 	}
 	else {
+		print $url, ": " if $self->{log_requests};
 		$resp = $self->{http}->mirror($url, $cachefile);
 		confess "Unexpected key cachefile" if exists $resp->{cachefile};
 		$resp->{cachefile} = $cachefile if $resp->{status}==304;
@@ -186,6 +190,7 @@ sub get {  ## no critic (ProhibitExcessComplexity)
 		close $fh;
 	}
 	my $status = $resp->{status}==599 ? $resp->{content} : "$resp->{status} $resp->{reason}";
+	print $status, "\n" if $self->{log_requests};
 	if ( $resp->{success} ) {
 		print STDERR ref($self),"->get: fetched ",pp($url),": ",$status,"\n" if $self->{verbose};
 		return $resp;
